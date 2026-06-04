@@ -1,0 +1,21 @@
+{
+  "name": "Cavalyra",
+  "short_name": "Cavalyra",
+  "description": "Training, Pferdebuch, Kurse und Body Scanner für dein Pferd.",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#5c3540",
+  "theme_color": "#5c3540",
+  "lang": "de",
+  "dir": "ltr",
+  "categories": ["lifestyle", "sports", "health"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
