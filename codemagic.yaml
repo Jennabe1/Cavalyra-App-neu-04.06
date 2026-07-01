@@ -17,16 +17,18 @@ workflows:
     name: iOS App Store Release
     max_build_duration: 60
     instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Cavalyra App Store Connect   # <-- exact name of the API key integration in Codemagic (Teams → Integrations → App Store Connect)
     environment:
       groups:
         - cavalyra                 # DEVELOPMENT_TEAM, PROVISIONING_PROFILE_SPECIFIER
-        - app_store_credentials    # APP_STORE_CONNECT_ISSUER_ID / KEY_IDENTIFIER / PRIVATE_KEY
       node: 20
       xcode: latest
       vars:
         BUNDLE_ID: "de.cavalyra.app"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
+        APP_STORE_APPLE_ID: ""     # optional: numeric App Store Connect app ID
     scripts:
       - name: Install dependencies
         script: npm ci
