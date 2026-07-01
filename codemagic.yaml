@@ -31,7 +31,7 @@ workflows:
         APP_STORE_APPLE_ID: "6785490497"
     scripts:
       - name: Install dependencies
-        script: npm ci
+        script: npm install
       - name: Build web + Capacitor sync
         script: |
           npm run build
