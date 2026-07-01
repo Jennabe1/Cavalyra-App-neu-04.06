@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CAPACITOR_DEBUG</key>
+	<string>$(CAPACITOR_DEBUG)</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>de</string>
+	<key>CFBundleDisplayName</key>
+	<string>Cavalyra</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>armv7</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<true/>
+
+	<!-- ===== Berechtigungs-Texte (Apple Privacy Usage Descriptions) ===== -->
+	<key>NSCameraUsageDescription</key>
+	<string>Cavalyra benötigt Zugriff auf die Kamera, um Fotos deines Pferdes für den Body Scan aufzunehmen.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Cavalyra benötigt Zugriff auf deine Fotos, um vorhandene Pferdebilder für den Body Scan auszuwählen.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Cavalyra speichert Body-Scan-Berichte und Pferdefotos in deiner Fotomediathek.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Cavalyra benötigt das Mikrofon nur, wenn du Videos mit Ton aufnimmst.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Cavalyra nutzt deinen Standort, um deine Ausritte per GPS aufzuzeichnen.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Cavalyra nutzt deinen Standort, um Ausritte auch im Hintergrund weiter aufzuzeichnen.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Cavalyra fügt Body-Scan-Termine und Ausritte zu deinem Kalender hinzu.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Cavalyra kann Face ID zum schnellen und sicheren Entsperren deines Kontos verwenden.</string>
+
+	<!-- Dateien-App-Integration: PDF-Berichte sichtbar machen -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<!-- App Transport Security: HTTPS Pflicht (Standard) -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+	</dict>
+
+	<!-- Hintergrund-Modus für GPS-Ausritte -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+
+	<!-- ITSAppUsesNonExemptEncryption=false vermeidet jährliche Export-Compliance-Frage im App Store. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

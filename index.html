@@ -5,17 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Cavalyra</title>
 <meta name="theme-color" content="#5c3540">
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png">
-<link rel="apple-touch-icon" sizes="192x192" href="/icons/apple-touch-icon-192.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
 <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png">
 <link rel="shortcut icon" href="/icons/icon-192.png">
-<meta name="mobile-web-app-capable" content="yes">
 <meta name="application-name" content="Cavalyra">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Cavalyra">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -2005,6 +1998,15 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
 
 </style>
 <meta name="theme-color" content="#5c3540">
+<!-- Google Play Billing Abstraction (no-op on Web). Lädt früh, damit
+     CavalyraBilling.* sofort verfügbar ist. cordova.js wird nur im Native-
+     Build (Capacitor/Android) tatsächlich aufgelöst und stellt CdvPurchase
+     bereit; im Web schlägt der Request still fehl. -->
+<!-- Zentrale Konfiguration: REVIEW_MODE. Muss vor allen anderen Scripts geladen
+     werden, damit window.CAVALYRA_REVIEW_MODE für Billing und Pro-Logik verfügbar ist. -->
+<script type="module" src="./src/config.ts"></script>
+<script src="cordova.js"></script>
+<script src="/billing/cavalyra-billing.js" defer></script>
 </head>
 <body>
 <div id="cavalyraSplash"><div class="splash-logo-frame"><img src="/cavalyra-horse-splash.png" alt="Cavalyra"></div></div>
@@ -2022,66 +2024,6 @@ html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--t
   setTimeout(hideSplash, 1800);
 })();
 
-
-/* ===== Cavalyra PWA Register (single source of truth) ===== */
-function cavalyraIsStandalone(){
-  return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
-}
-function cavalyraCanUseServiceWorker(){
-  const secure = window.location.protocol === "https:" || window.location.hostname === "localhost";
-  const host = window.location.hostname || "";
-  const isPreviewHost = host.includes("lovableproject.com") || host.includes("lovable.app") || host.includes("id-preview--");
-  let inFrame = false;
-  try{ inFrame = window.self !== window.top; }catch(_){ inFrame = true; }
-  return secure && !inFrame && !isPreviewHost && "serviceWorker" in navigator;
-}
-if (cavalyraCanUseServiceWorker()) {
-  window.addEventListener("load", function () {
-    navigator.serviceWorker.register("/service-worker.js", { scope: "/" })
-      .then(function (reg) {
-        if (reg && reg.update) { try { reg.update(); } catch(_) {} }
-      })
-      .catch(function (err) { console.warn("SW registration failed", err); });
-  });
-} else if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations?.().then(function(regs){ regs.forEach(function(r){ r.unregister(); }); }).catch(function(){});
-}
-
-/* Install prompt capture (so we can offer "App installieren") */
-window.cavalyraInstallPrompt = null;
-window.addEventListener("beforeinstallprompt", function (e) {
-  e.preventDefault();
-  window.cavalyraInstallPrompt = e;
-  console.info("Cavalyra: install prompt available");
-});
-window.addEventListener("appinstalled", function () {
-  window.cavalyraInstallPrompt = null;
-  console.info("Cavalyra: installed");
-});
-
-async function installCavalyraApp(){
-  if(cavalyraIsStandalone()){
-    toast("Cavalyra ist bereits installiert.");
-    return false;
-  }
-  if(window.cavalyraInstallPrompt){
-    const promptEvent = window.cavalyraInstallPrompt;
-    window.cavalyraInstallPrompt = null;
-    promptEvent.prompt();
-    const choice = await promptEvent.userChoice.catch(()=>null);
-    toast(choice && choice.outcome === "accepted" ? "Installation gestartet." : "Installation abgebrochen.");
-    return false;
-  }
-  const ua = navigator.userAgent || "";
-  const isiOS = /iphone|ipad|ipod/i.test(ua);
-  const isHuaweiBrowser = /HuaweiBrowser|HUAWEI|HMSCore|HiSearch|Petal/i.test(ua);
-  if(isHuaweiBrowser){
-    alert("Hinweis für Huawei-Browser:\n\nDer Huawei-Browser legt nur eine Verknüpfung an, keine echte App-Installation.\n\nSo installierst du Cavalyra richtig:\n1. Öffne diese Seite in Chrome (im Huawei AppGallery erhältlich) oder im Petal-Browser.\n2. Tippe dort im Menü auf „App installieren“ / „Zum Startbildschirm hinzufügen“.\n\nAlternativ kannst du die Verknüpfung des Huawei-Browsers nutzen – Cavalyra läuft auch dort vollständig.");
-    return false;
-  }
-  alert(isiOS ? "Auf iPhone/iPad: In Safari öffnen, Teilen-Symbol wählen und „Zum Home-Bildschirm“ antippen." : "Wenn kein Installationsfenster erscheint: In Chrome/Edge das Menü öffnen und „App installieren“ wählen. Die App muss über HTTPS geöffnet sein.");
-  return false;
-}
 
 </script>
 
@@ -2236,7 +2178,7 @@ const CAVALYRA_LEGAL_TEXTS = {
 <p>Cavalyra Pro kostet nach aktuellem Stand 4,85 € monatlich oder 52,38 € jährlich. Maßgeblich sind die Preise, die im Lemon-Squeezy-Checkout angezeigt werden.</p>
 
 <h3>8. Testphase</h3>
-<p>Soweit angeboten, beträgt die Testphase 7 Tage. Nach Ablauf der Testphase werden Pro-Funktionen ohne gültige Lizenz gesperrt.</p>
+<p>Soweit angeboten, beträgt die Testphase 3 Tage. Nach Ablauf der Testphase werden Pro-Funktionen ohne gültige Lizenz gesperrt.</p>
 
 <h3>9. Laufzeit und Kündigung</h3>
 <p>Abonnements laufen entsprechend dem gewählten Zahlungsintervall und können über Lemon Squeezy verwaltet und gekündigt werden. Nach Ende der Laufzeit oder bei fehlender Lizenz können Pro-Funktionen gesperrt werden.</p>
@@ -2327,7 +2269,7 @@ const CAVALYRA_LEGAL_TEXTS = {
 <p>Eine Begrenzung der Aktivierungen oder Geräte kann vorgesehen sein. Bei Überschreitung kann eine erneute Aktivierung verweigert oder eine Deaktivierung alter Geräte erforderlich werden.</p>
 
 <h3>4. Testphase</h3>
-<p>Die Testphase beträgt 7 Tage, soweit angeboten. Nach Ablauf wird Pro automatisch gesperrt, sofern keine gültige Lizenz aktiv ist.</p>
+<p>Die Testphase beträgt 3 Tage, soweit angeboten. Nach Ablauf wird Pro automatisch gesperrt, sofern keine gültige Lizenz aktiv ist.</p>
 
 <h3>5. Revalidierung</h3>
 <p>Die App kann den Lizenzstatus regelmäßig prüfen. Nach erfolgreicher Prüfung kann eine zeitlich begrenzte Offline-Nutzung möglich sein.</p>
@@ -2559,31 +2501,94 @@ const CAVALYRA_LICENSE_CONFIG = {
   customerPortalUrl: "https://customer-portal.paddle.com/cpl_01ksj34k26v4xebfvgtnb3xbf9",
   checkEndpoint: "/.netlify/functions/check-license"
 };
+const CAVALYRA_LICENSE_STORAGE_KEYS = ["cavalyra_license", "cavalyra_license_v1", "cavalyra_pro_license", "cavalyra_pro_access"];
+
+function isLicenseAccessStatus(status){
+  const s = canonicalLicenseStatus(status);
+  return s === "pro" || s === "trial";
+}
+
+function canonicalLicenseStatus(status){
+  const s = String(status || "").trim().toLowerCase();
+  if(["pro", "active", "paid", "valid", "subscribed"].includes(s)) return "pro";
+  if(["trial", "trialing"].includes(s)) return "trial";
+  if(["past_due", "past-due", "payment_failed"].includes(s)) return "past_due";
+  if(["expired", "paused"].includes(s)) return "expired";
+  if(["canceled", "cancelled"].includes(s)) return "canceled";
+  return "free";
+}
+
+function licenseRank(status){
+  return ({ pro:5, trial:4, past_due:3, expired:2, canceled:1, free:0 })[canonicalLicenseStatus(status)] || 0;
+}
+
+function readStoredLicense(){
+  const stores = [];
+  try{ stores.push(localStorage); }catch(_){}
+  try{ stores.push(sessionStorage); }catch(_){}
+  let best = null;
+  stores.forEach(store=>{
+    CAVALYRA_LICENSE_STORAGE_KEYS.forEach(key=>{
+      try{
+        const raw = store.getItem(key);
+        if(!raw) return;
+        const parsed = JSON.parse(raw);
+        if(!parsed || typeof parsed !== "object") return;
+        parsed.status = canonicalLicenseStatus(parsed.status || (parsed.pro ? "pro" : "free"));
+        if(!best || licenseRank(parsed.status) > licenseRank(best.status)) best = parsed;
+      }catch(_){}
+    });
+  });
+  return best;
+}
+
+function persistLicense(license){
+  CAVALYRA_LICENSE_STORAGE_KEYS.forEach(key=>{
+    try{ localStorage.setItem(key, JSON.stringify(license)); }catch(_){}
+    try{ sessionStorage.setItem(key, JSON.stringify(license)); }catch(_){}
+  });
+  if(isLicenseAccessStatus(license && license.status)){
+    try{ localStorage.setItem("cavalyra_pro_unlocked", "1"); }catch(_){}
+    try{ sessionStorage.setItem("cavalyra_pro_unlocked", "1"); }catch(_){}
+  } else {
+    try{ localStorage.removeItem("cavalyra_pro_unlocked"); }catch(_){}
+    try{ sessionStorage.removeItem("cavalyra_pro_unlocked"); }catch(_){}
+  }
+}
 
 function normalizeLicense(){
-  state.license = state.license || {};
-  if(!state.license.status){
-    state.license.status = state.license.pro ? "pro" : "free";
-  }
-  if(["pro","trial","free","expired","past_due","canceled"].indexOf(state.license.status) === -1){
-    state.license.status = "free";
-  }
+  const stored = readStoredLicense();
+  const current = state.license || {};
+  current.status = canonicalLicenseStatus(current.status || (current.pro ? "pro" : "free"));
+  state.license = stored && licenseRank(stored.status) > licenseRank(current.status) ? stored : current;
+  state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+  state.license.pro = isLicenseAccessStatus(state.license.status);
   return state.license;
 }
 
-function saveLicense(){
+function saveLicense(force){
+  if(!force) normalizeLicense();
+  else {
+    state.license = state.license || {};
+    state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+    state.license.pro = isLicenseAccessStatus(state.license.status);
+  }
   save("license", state.license);
+  persistLicense(state.license);
 }
 
 function licenseEmail(){
-  return localStorage.getItem("cavalyra_license_email") || "";
+  try{ return localStorage.getItem("cavalyra_license_email") || sessionStorage.getItem("cavalyra_license_email") || ""; }catch(_){ return ""; }
 }
 
 function setLicenseEmail(email){
-  localStorage.setItem("cavalyra_license_email", String(email || "").trim().toLowerCase());
+  const value = String(email || "").trim().toLowerCase();
+  try{ localStorage.setItem("cavalyra_license_email", value); }catch(_){}
+  try{ sessionStorage.setItem("cavalyra_license_email", value); }catch(_){}
 }
 
 function licenseStatusLabel(){
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Pro aktiv";
   const lic = normalizeLicense();
   if(lic.status === "pro") return "Pro aktiv";
   if(lic.status === "trial") return "Testphase aktiv";
@@ -2594,6 +2599,7 @@ function licenseStatusLabel(){
 }
 
 function licenseStatusClass(){
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "pro";
   const s = normalizeLicense().status;
   if(s === "pro" || s === "trial") return "pro";
   if(s === "expired" || s === "past_due" || s === "canceled") return "expired";
@@ -2601,6 +2607,7 @@ function licenseStatusClass(){
 }
 
 function licenseStatusText(){
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Review Mode: Alle Pro-Funktionen sind freigeschaltet.";
   const lic = normalizeLicense();
   if(lic.status === "pro") return "Dein Cavalyra Pro Zugang ist aktiv.";
   if(lic.status === "trial") return "Deine Testphase ist aktiv. Der Status wird über Paddle geprüft.";
@@ -2636,9 +2643,11 @@ async function checkCavalyraLicenseStatus(){
       throw new Error(data && data.message ? data.message : "Status konnte nicht geprüft werden.");
     }
 
+    const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
+    const isPro = newStatus === "pro" || newStatus === "trial";
     state.license = {
-      status: data.status || "free",
-      pro: data.status === "pro" || data.status === "trial",
+      status: newStatus,
+      pro: isPro,
       email: email,
       source: "paddle-check",
       checkedAt: new Date().toISOString(),
@@ -2646,10 +2655,16 @@ async function checkCavalyraLicenseStatus(){
       subscriptionId: data.subscriptionId || "",
       customerId: data.customerId || ""
     };
-    saveLicense();
+    saveLicense(true);
 
-    toast(data.status === "pro" || data.status === "trial" ? "Pro-Status bestätigt" : "Kein aktives Pro-Abo gefunden");
-    render();
+    toast(isPro ? "Pro-Status bestätigt" : "Kein aktives Pro-Abo gefunden");
+
+    if(isPro){
+      render();
+      setTimeout(()=>{ try { location.reload(); } catch(_){} }, 700);
+    } else {
+      render();
+    }
   }catch(err){
     console.error("License check failed", err);
     toast("Lizenzprüfung aktuell nicht möglich. Bitte später erneut versuchen.");
@@ -2683,11 +2698,13 @@ function requireProAccess(featureName){
 }
 
 function proLock(title,text){
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "";
   return `<div class="pro-lock"><h3>${esc(title)} <span class="pro-chip">Pro</span></h3><p>${esc(text)}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">Pro-Status prüfen</button><button class="btn secondary" onclick="return openCavalyraPricing()">Pro freischalten</button></div></div>`;
 }
 
 
 function trialDaysLeft(){
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return null;
   if(state.license && state.license.status==="pro") return null;
   if(!state.license || state.license.status!=="trial") return 0;
   if(state.license.validUntil){
@@ -2702,13 +2719,22 @@ function trialDaysLeft(){
 
 
 function hasProAccess(){
-  normalizeLicense();
-  return state.license.status==="pro" || (state.license.status==="trial" && trialDaysLeft()>0);
+  // REVIEW_MODE: Für App-Store-/Google-Play-Reviews sind alle Pro-Funktionen
+  // freigeschaltet, ohne Zahlung oder Login. Zentrale Quelle: src/config.ts
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return true;
+  const lic = normalizeLicense();
+  if(lic.status === "pro") return true;
+  if(lic.status === "trial"){
+    if(lic.validUntil) return new Date(lic.validUntil) > new Date();
+    return true;
+  }
+  return false;
 }
 
 
 function statusText(){
   normalizeLicense();
+  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Pro aktiv";
   if(state.license.status==="pro") return "Pro aktiv";
   if(state.license.status==="trial" && trialDaysLeft()>0) return "Testphase aktiv";
   return "";
@@ -3014,7 +3040,7 @@ function timelineItems(){
   return items.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,12);
 }
 function proOnlyBox(title, text){
-  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">7 Tage testen</button><button class="btn secondary" onclick="navigate('pro')">Pro freischalten</button></div></div>`;
+  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">3 Tage kostenlos testen</button><button class="btn secondary" onclick="navigate('pro')">Pro freischalten</button></div></div>`;
 }
 
 
@@ -3299,6 +3325,7 @@ function renderHorsebook(){
 window.cavalyraScanUploads = window.cavalyraScanUploads || {};
 function resetCavalyraScanUploads(){
   window.cavalyraScanUploads = {};
+  window.__cavalyraAutoStartFired = false;
 }
 function updateCavalyraScanChecks(){
   const uploaded = window.cavalyraScanUploads || {};
@@ -3376,8 +3403,17 @@ function handleCavalyraScanUpload(event){
       prev.src = compressed;
     }
     updateCavalyraScanChecks();
-    toast(`Foto gespeichert (${Object.keys(window.cavalyraScanUploads).length}/5)`);
+    const total = Object.keys(window.cavalyraScanUploads).length;
+    toast(`Foto gespeichert (${total}/5)`);
+    // Auto-Start: Sobald alle 5 Fotos vorhanden sind, Analyse genau EINMAL anstoßen
+    if(total === 5 && !window.__cavalyraBodyScanRunning && !window.__cavalyraAutoStartFired){
+      window.__cavalyraAutoStartFired = true;
+      setTimeout(()=>{
+        try{ startCavalyraBodyScan(); }catch(e){ console.error("Auto-Start Body Scan fehlgeschlagen", e); }
+      }, 300);
+    }
   };
+  reader.onerror = () => toast("Foto konnte nicht gelesen werden. Bitte erneut versuchen.");
   reader.readAsDataURL(file);
 }
 
@@ -3509,6 +3545,12 @@ function shrinkDataUrl(dataUrl, maxSide){
   });
 }
 async function startCavalyraBodyScan(){
+  // Hard-Lock: verhindert Doppelanalysen (z.B. Klick + Auto-Start)
+  if(window.__cavalyraBodyScanRunning){
+    console.warn("Body scan bereits aktiv – zweiter Start ignoriert");
+    return false;
+  }
+
   if(!hasProAccess()){
     toast("Cavalyra Body Scanner ist Teil von Pro.");
     navigate("pro");
@@ -3544,6 +3586,7 @@ async function startCavalyraBodyScan(){
     return false;
   }
 
+  window.__cavalyraBodyScanRunning = true;
   const btn = document.getElementById("startBodyScan");
   if(btn){ btn.disabled = true; btn.textContent = "Analyse läuft… (bis zu 30 Sek.)"; }
 
@@ -3555,23 +3598,69 @@ async function startCavalyraBodyScan(){
       photos.push({ position: pos, dataUrl: small });
     }
 
-    const res = await fetch(CAVALYRA_SCAN_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ photos, horseName: activeHorseName() })
-    });
+    // Vorherige Scans (kompakt) als Trendkontext mitsenden
+    let prevScansForApi = [];
+    try{
+      const allScans = (typeof ensureScanStore === "function" ? ensureScanStore() : []) || [];
+      prevScansForApi = allScans
+        .filter(s => s && s.horseId === state.activeHorseId)
+        .slice(-3)
+        .map(s => ({
+          date: s.date,
+          bodyCondition: s.bodyCondition,
+          muscleScore: s.muscleScore,
+          symmetryScore: s.symmetryScore,
+          exteriorScore: s.exteriorScore,
+          findings: Array.isArray(s.findings) ? s.findings.slice(0,4) : []
+        }));
+    }catch(e){}
+    let horseBreed = "";
+    try{
+      const h = (state.horses||[]).find(x=>x.id===state.activeHorseId);
+      horseBreed = (h && (h.breed || h.race)) || "";
+    }catch(e){}
+    const payload = JSON.stringify({ photos, horseName: activeHorseName(), horseBreed, previousScans: prevScansForApi });
+    const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc";
+    const headers = {
+      "Content-Type": "application/json",
+      "apikey": ANON_KEY,
+      "Authorization": "Bearer " + ANON_KEY
+    };
 
-    if(!res.ok){
-      const j = await res.json().catch(()=>({}));
-      const msg = j && j.error ? j.error : `Analyse fehlgeschlagen (${res.status})`;
-      toast(msg);
-      if(btn){ btn.disabled = false; btn.textContent = "Cavalyra Body Scan auswerten"; }
-      return false;
+    async function callScan(){
+      return await fetch(CAVALYRA_SCAN_ENDPOINT, { method:"POST", headers, body: payload });
     }
 
-    const { analysis } = await res.json();
+    let res, analysis = null, lastErrMsg = "";
+    for(let attempt = 1; attempt <= 2; attempt++){
+      try{
+        if(btn && attempt > 1) btn.textContent = "Analyse läuft… (2. Versuch)";
+        res = await callScan();
+        if(!res.ok){
+          const j = await res.json().catch(()=>({}));
+          lastErrMsg = (j && j.error) ? j.error : `Analyse fehlgeschlagen (${res.status})`;
+          if(res.status >= 500 || res.status === 408 || res.status === 429){
+            await new Promise(r=>setTimeout(r, 800));
+            continue;
+          }
+          toast(lastErrMsg);
+          if(btn){ btn.disabled = false; btn.textContent = "Cavalyra Body Scan auswerten"; }
+          return false;
+        }
+        const json = await res.json().catch(()=>null);
+        analysis = json && json.analysis;
+        if(analysis) break;
+        lastErrMsg = "Analyse-Antwort war leer. Bitte erneut versuchen.";
+        await new Promise(r=>setTimeout(r, 800));
+      }catch(netErr){
+        lastErrMsg = "Netzwerkfehler bei der Analyse.";
+        console.warn("Body scan attempt failed", attempt, netErr);
+        await new Promise(r=>setTimeout(r, 800));
+      }
+    }
+
     if(!analysis){
-      toast("Analyse-Antwort war leer. Bitte erneut versuchen.");
+      toast(lastErrMsg || "Analyse fehlgeschlagen. Bitte erneut versuchen.");
       if(btn){ btn.disabled = false; btn.textContent = "Cavalyra Body Scan auswerten"; }
       return false;
     }
@@ -3579,7 +3668,7 @@ async function startCavalyraBodyScan(){
       const al = document.getElementById("speciesAlert");
       if(al){
         al.classList.add("show");
-        al.innerHTML = "<strong>Kein Pferd erkannt:</strong> Die Analyse ist ausschließlich für Pferde geeignet. Bitte lade nur Fotos eines Pferdes hoch.";
+        al.innerHTML = "<strong>Kein Pferd erkannt:</strong> Bitte lade gut erkennbare Fotos deines Pferdes hoch. Für den Body Scanner werden Ansichten von der Seite, von hinten und entlang der Rückenlinie benötigt.";
       }
       toast("Die Analyse ist nur für Pferde verfügbar.");
       if(btn){ btn.disabled = false; btn.textContent = "Cavalyra Body Scan auswerten"; }
@@ -3587,21 +3676,42 @@ async function startCavalyraBodyScan(){
     }
 
     const scans = ensureScanStore();
-    const scan = createAiScan(uploaded, analysis);
-    scans.push(scan);
-    saveScanStore();
+    // Doppelschutz: falls in den letzten 5 Sekunden bereits ein Scan für dieses Pferd gespeichert wurde, nicht erneut anlegen
+    const nowTs = Date.now();
+    const justSaved = scans.find(s => s && s.horseId === state.activeHorseId && s.id && /^scan-(\d+)/.test(s.id) && (nowTs - Number(s.id.replace("scan-","")) < 5000));
+    let scan;
+    if(justSaved){
+      console.warn("Doppelter Scan-Save verhindert – nutze bestehenden", justSaved.id);
+      scan = justSaved;
+    } else {
+      scan = createAiScan(uploaded, analysis);
+      scans.push(scan);
+      saveScanStore();
 
-    if(typeof addCalendarEvent === "function"){
-      try{
-        addCalendarEvent({
-          horseId: state.activeHorseId,
-          type: "custom",
-          date: addDaysISO(14),
-          title: "Erneuter Cavalyra Body Scan empfohlen",
-          meta: "Cavalyra Body Scanner",
-          notes: "Automatisch nach dem letzten Scan angelegt."
-        });
-      }catch(e){}
+      // Kalendereintrag: Body Scan am Datum der Durchführung, korrekt dem Pferd zugeordnet
+      if(typeof addCalendarEvent === "function"){
+        try{
+          addCalendarEvent({
+            id: "ev-bs-" + scan.id,
+            horseId: state.activeHorseId,
+            type: "bodyscan",
+            date: scan.date,
+            title: "Body Scan durchgeführt",
+            meta: "Cavalyra Body Scanner",
+            notes: `BCS: ${scan.bodyCondition}/9 – Analyse gespeichert`
+          });
+          // Erinnerung: erneuter Scan in 14 Tagen
+          addCalendarEvent({
+            id: "ev-bs-next-" + scan.id,
+            horseId: state.activeHorseId,
+            type: "custom",
+            date: addDaysISO(14),
+            title: "Erneuter Cavalyra Body Scan empfohlen",
+            meta: "Cavalyra Body Scanner",
+            notes: "Automatisch nach dem letzten Scan angelegt."
+          });
+        }catch(e){ console.warn("Kalendereintrag Body Scan fehlgeschlagen", e); }
+      }
     }
 
     resetCavalyraScanUploads();
@@ -3618,6 +3728,8 @@ async function startCavalyraBodyScan(){
     console.error("Body scan failed", err);
     toast(navigator.onLine ? "Analyse fehlgeschlagen. Bitte erneut versuchen." : "Scan kann nicht gestartet werden, keine Internetverbindung");
     if(btn){ btn.disabled = false; btn.textContent = "Cavalyra Body Scan auswerten"; }
+  } finally {
+    window.__cavalyraBodyScanRunning = false;
   }
 
   return false;
@@ -3698,7 +3810,7 @@ function renderScanner(){
   const access=hasProAccess();
   if(!access){
     document.getElementById("screen-scanner").innerHTML = `
-      <div class="hero"><h1>Cavalyra<br>Body Scanner</h1><p>Geführtes Screening für ${esc(activeHorseName())}: Körperzustand, Fettpolster, Muskulatur, Symmetrie und Exterieur im Verlauf beobachten.</p></div>
+      <div class="hero"><h1>Cavalyra<br>Body Scanner</h1><p>Geführtes Screening für ${esc(activeHorseName())}: Körperzustand, Muskulatur, Symmetrie und Exterieur im Verlauf beobachten.</p></div>
       ${proLock("Cavalyra Body Scanner freischalten","Der Body Scanner ist Teil von Pro. Prüfe deinen Pro-Status oder schalte Pro über cavalyra.de frei.")}
     `;
     return;
@@ -3709,7 +3821,7 @@ function renderScanner(){
   const view = window.cavalyraScannerView || (scans.length ? "result" : "new");
 
   document.getElementById("screen-scanner").innerHTML = `
-    <div class="hero"><h1>Cavalyra<br>Body Scanner</h1><p>Geführtes Screening für ${esc(activeHorseName())}:<br>Körperzustand, Fettpolster,<br>Muskulatur, Symmetrie und Exterieur<br>im Verlauf beobachten.</p></div>
+    <div class="hero"><h1>Cavalyra<br>Body Scanner</h1><p>Geführtes Screening für ${esc(activeHorseName())}:<br>Körperzustand, Muskulatur,<br>Symmetrie und Exterieur<br>im Verlauf beobachten.</p></div>
     ${!access ? proLock("Cavalyra Body Scanner ist Teil von Cavalyra Pro","Aktiviere deine Testphase oder Pro, um die Analyse-Funktion zu nutzen.") : ""}
 
     <div class="card section">
@@ -4047,12 +4159,12 @@ function professionalScanNarrative(scan, previous){
   return `
     <div class="scan-summary-card"><h3>Zusammenfassung für dich</h3><p>${summary}</p>
       <div class="scan-pill-row">
-        ${pill("Fettpolster: "+fat.status, fat.level)}
+        ${pill("Körperanalyse: "+fat.status, fat.level)}
         ${pill("Muskulatur: "+muscleAtrophy.status, muscleAtrophy.level)}
         ${pill("Haltung/Exterieur: "+posture.status, posture.level)}
       </div>
     </div>
-    <div class="scan-summary-card"><h3>Fettpolster</h3><p>${esc(fat.text)}</p></div>
+    <div class="scan-summary-card"><h3>Körperanalyse</h3><p>${esc(fat.text)}</p></div>
     <div class="scan-summary-card"><h3>Muskulatur & mögliche Atrophie</h3><p>${esc(muscleAtrophy.text)}</p></div>
     <div class="scan-summary-card"><h3>Fehlstellungen & Auffälligkeiten am Exterieur</h3><p>${esc(posture.text)}</p></div>
     <div class="scan-summary-card"><h3>Tipps & nächste Schritte</h3><ul class="scan-tip-list">${tips.map(t=>`<li>${esc(t)}</li>`).join("")}</ul></div>
@@ -4071,7 +4183,8 @@ function aiScanNarrative(scan, previous){
     if(!item) return "";
     const tips = Array.isArray(item.tips) && item.tips.length
       ? `<ul class="scan-tip-list">${item.tips.map(t=>`<li>${esc(t)}</li>`).join("")}</ul>` : "";
-    return `<div class="scan-summary-card"><h3>${esc(title)}${item.title?` – ${esc(item.title)}`:""}</h3><p>${esc(item.text||"")}</p>${tips}</div>`;
+    // Doppelte Überschrift vermeiden: item.title nur dann anzeigen, wenn er sich klar vom übergeordneten Titel unterscheidet
+    return `<div class="scan-summary-card"><h3>${esc(title)}</h3><p>${esc(item.text||"")}</p>${tips}</div>`;
   };
   const positives = Array.isArray(a.positives) && a.positives.length
     ? `<div class="scan-summary-card"><h3>Positives Feedback</h3><ul class="scan-tip-list">${a.positives.map(p=>`<li>${esc(p)}</li>`).join("")}</ul></div>` : "";
@@ -4080,27 +4193,66 @@ function aiScanNarrative(scan, previous){
   const reco = a.recommendation
     ? `<div class="scan-summary-card"><h3>Empfehlung & nächste Schritte</h3><p>${esc(a.recommendation)}</p></div>` : "";
 
-  let trend = "Dies ist der erste Scan und damit deine Vergleichsbasis.";
-  if(previous){
-    const ch = [];
-    if(scan.bodyCondition<previous.bodyCondition) ch.push("Körperzustand wirkt etwas kontrollierter als zuvor.");
-    if(scan.bodyCondition>previous.bodyCondition) ch.push("Körperzustand wirkt fülliger als zuvor – Fütterung/Bewegung gegenchecken.");
-    if(scan.muscleScore>previous.muscleScore) ch.push("Muskelbild zeigt eine positive Tendenz.");
-    if(scan.muscleScore<previous.muscleScore) ch.push("Muskelbild wirkt schwächer als zuvor.");
-    if(scan.symmetryScore>previous.symmetryScore) ch.push("Symmetrie wirkt ausgeglichener.");
-    trend = ch.length ? ch.join(" ") : "Im Verlauf sind keine klaren Veränderungen erkennbar.";
+
+  // Muskeldetail (aus AI), falls vorhanden – ohne Zahlenwerte, mit verständlichen Kategorien
+  const scoreCategory = (s) => {
+    if(typeof s !== "number" || !isFinite(s)) return "";
+    if(s >= 80) return "gut erkennbar";
+    if(s >= 65) return "stabil";
+    if(s >= 50) return "leicht ausbaufähig";
+    return "deutlich ausbaufähig";
+  };
+  const md = a.muscleDetail || null;
+  const muscleDetailHtml = md && typeof md === "object" ? (()=>{
+    const rows = [
+      ["Oberlinie", md.topline],
+      ["Rücken", md.back],
+      ["Hinterhand", md.hindquarters],
+      ["Schulter", md.shoulder],
+      ["Hals", md.neck]
+    ].filter(r => r[1] && (r[1].note || typeof r[1].score === "number"));
+    if(!rows.length) return "";
+    return `<div class="scan-summary-card"><h3>Muskulatur im Detail</h3><ul class="scan-tip-list">${
+      rows.map(([label, v])=>{
+        const cat = scoreCategory(v && v.score);
+        const catTxt = cat ? ` <em style="opacity:.75">(${cat})</em>` : "";
+        return `<li><strong>${esc(label)}:</strong>${catTxt} ${esc(v.note||"")}</li>`;
+      }).join("")
+    }</ul></div>`;
+  })() : "";
+
+  // KI-Vergleich (bevorzugt gegenüber lokaler Heuristik)
+  const comp = a.comparison || null;
+  let trendHtml = "";
+  if(comp && (comp.summary || (Array.isArray(comp.changes) && comp.changes.length))){
+    const changes = Array.isArray(comp.changes) && comp.changes.length
+      ? `<ul class="scan-tip-list">${comp.changes.map(c=>`<li>${esc(c)}</li>`).join("")}</ul>` : "";
+    trendHtml = `<div class="scan-summary-card"><h3>Verlauf im Vergleich</h3><p>${esc(comp.summary||"")}</p>${changes}</div>`;
+  } else {
+    let trend = "Dies ist der erste Scan und damit deine Vergleichsbasis.";
+    if(previous){
+      const ch = [];
+      if(scan.bodyCondition<previous.bodyCondition) ch.push("Dein Pferd wirkt im Körperbau etwas kontrollierter als zuvor.");
+      if(scan.bodyCondition>previous.bodyCondition) ch.push("Dein Pferd wirkt fülliger als zuvor – schau dir Fütterung und Bewegung gemeinsam an.");
+      if(scan.muscleScore>previous.muscleScore) ch.push("Das Muskelbild zeigt eine positive Tendenz.");
+      if(scan.muscleScore<previous.muscleScore) ch.push("Das Muskelbild wirkt schwächer als zuvor.");
+      if(scan.symmetryScore>previous.symmetryScore) ch.push("Die Symmetrie wirkt ausgeglichener.");
+      trend = ch.length ? ch.join(" ") : "Im Verlauf sind aktuell keine klaren Veränderungen erkennbar.";
+    }
+    trendHtml = `<div class="scan-summary-card"><h3>Verlauf</h3><p>${esc(trend)}</p></div>`;
   }
 
   return `
     <div class="scan-summary-card"><h3>Analyse für ${horse}</h3></div>
-    ${block("Fettpolster", ass.body)}
-    ${block("Muskulatur & mögliche Atrophie", ass.muscle)}
-    ${block("Fehlstellungen & Symmetrie", ass.symmetry)}
+    ${block("Körperanalyse", ass.body)}
+    ${block("Muskulatur", ass.muscle)}
+    ${muscleDetailHtml}
+    ${block("Symmetrie & Stellung", ass.symmetry)}
     ${block("Exterieur", ass.exterior)}
     ${positives}
     ${findings}
     ${reco}
-    <div class="scan-summary-card"><h3>Verlauf</h3><p>${esc(trend)}</p></div>`;
+    ${trendHtml}`;
 }
 
 function renderScanResult(scan, previous){
@@ -4504,12 +4656,59 @@ window.addEventListener("offline", ()=>{
   if(el){ _destroyGpsMap(); _gpsOfflineNotice(el); updateGpsStatus("Offline – Karte pausiert."); }
 });
 
-function startGpsRide(){
-  if(!requireProAccess("Der GPS-Ausritttracker")) return false;
-  if(!navigator.geolocation){
-    toast("GPS wird von diesem Gerät/Browser nicht unterstützt.");
+function _isCapacitorNative(){
+  try{ return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); }
+  catch(_){ return false; }
+}
+function _capGeo(){
+  try{ return window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Geolocation; }catch(_){ return null; }
+}
+async function _ensureLocationPermission(){
+  const geo = _capGeo();
+  if(!geo) return true; // Web path handled by navigator.geolocation
+  try{
+    let st = await geo.checkPermissions();
+    if(st && (st.location === "granted" || st.coarseLocation === "granted")) return true;
+    st = await geo.requestPermissions({ permissions: ["location","coarseLocation"] });
+    return !!(st && (st.location === "granted" || st.coarseLocation === "granted"));
+  }catch(e){
+    console.warn("Permission request failed", e);
     return false;
   }
+}
+function _humanGeoError(err){
+  const code = err && (err.code || err.PERMISSION_DENIED);
+  const msg = (err && (err.message || err.errorMessage)) || "";
+  if(code === 1 || /denied|permission/i.test(msg)){
+    return "Standort-Berechtigung wurde nicht erteilt. Bitte in den Geräte-Einstellungen für Cavalyra erlauben.";
+  }
+  if(code === 2 || /unavailable|position/i.test(msg)){
+    return "Standort konnte nicht ermittelt werden. Bitte GPS aktivieren und im Freien erneut versuchen.";
+  }
+  if(code === 3 || /timeout/i.test(msg)){
+    return "GPS-Signal hat zu lange gebraucht. Bitte im Freien erneut versuchen.";
+  }
+  return msg || "GPS-Fehler.";
+}
+async function startGpsRide(){
+  if(!requireProAccess("Der GPS-Ausritttracker")) return false;
+  const hasNavGeo = !!navigator.geolocation;
+  const hasCapGeo = !!_capGeo();
+  if(!hasNavGeo && !hasCapGeo){
+    toast("GPS wird von diesem Gerät nicht unterstützt.");
+    return false;
+  }
+
+  // Auf nativen Android-Builds: Runtime-Permission explizit anfordern
+  if(_isCapacitorNative()){
+    const ok = await _ensureLocationPermission();
+    if(!ok){
+      toast("Bitte Standort-Berechtigung erlauben, um den Ausritt aufzuzeichnen.");
+      updateGpsStatus("Standort-Berechtigung fehlt.");
+      return false;
+    }
+  }
+
   resetGpsRide();
   gpsRide.active=true;
   gpsRide.startTime=Date.now();
@@ -4520,12 +4719,26 @@ function startGpsRide(){
     updateGpsUI();
   },1000);
 
-  gpsRide.watchId=navigator.geolocation.watchPosition(pos=>{
-    gpsAcceptPoint(cleanGpsPoint(pos));
-  }, err=>{
-    updateGpsStatus("GPS-Fehler: " + err.message);
-    toast("GPS konnte nicht gestartet werden: "+err.message);
-  }, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+  const onPos = pos => gpsAcceptPoint(cleanGpsPoint(pos));
+  const onErr = err => {
+    const human = _humanGeoError(err);
+    updateGpsStatus("GPS-Fehler: " + human);
+    toast(human);
+  };
+
+  if(hasCapGeo){
+    try{
+      gpsRide.watchId = await _capGeo().watchPosition(
+        { enableHighAccuracy:true, timeout:20000, maximumAge:0 },
+        (position, err) => { if(err) return onErr(err); if(position) onPos(position); }
+      );
+      gpsRide.useCapacitor = true;
+    }catch(e){ onErr(e); }
+  } else {
+    gpsRide.watchId = navigator.geolocation.watchPosition(onPos, onErr,
+      { enableHighAccuracy:true, maximumAge:0, timeout:20000 });
+    gpsRide.useCapacitor = false;
+  }
 
   toast("GPS-Ausritt gestartet");
   renderRide();
@@ -4540,7 +4753,15 @@ function stopGpsRide(){
     return false;
   }
   tickGaitTime(Date.now());
-  if(gpsRide.watchId!==null && navigator.geolocation) navigator.geolocation.clearWatch(gpsRide.watchId);
+  if(gpsRide.watchId!==null){
+    try{
+      if(gpsRide.useCapacitor && _capGeo()){
+        _capGeo().clearWatch({ id: gpsRide.watchId });
+      } else if(navigator.geolocation){
+        navigator.geolocation.clearWatch(gpsRide.watchId);
+      }
+    }catch(_){}
+  }
   if(gpsRide.timer) clearInterval(gpsRide.timer);
   gpsRide.active=false;
   gpsRide.stopped=true;
@@ -4736,7 +4957,7 @@ function renderPro(){
 
 
 function renderProfile(){
-  let statusHTML = state.license.status==="pro"
+  let statusHTML = hasProAccess()
     ? `<h3>🟢 Pro aktiv</h3><p>Dein Pro-Zugang ist aktiv.</p>`
     : "";
 
@@ -4749,8 +4970,6 @@ function renderProfile(){
       <div class="card">
         <div class="profile-head"><img class="avatar" src="${ICON}" alt="Cavalyra Icon"><div><h2>Cavalyra Profil</h2><p>Lokales Profil auf diesem Gerät</p></div></div>
         <div class="status-card">${statusHTML}<ul><li>Alle Kurse</li><li>Cavalyra Body Scanner</li><li>Premium-Inhalte</li></ul><button class="btn secondary section" onclick="navigate('pro')">Pro freischalten</button></div>
-        <button class="btn section block" onclick="return installCavalyraApp()">📲 Cavalyra App installieren</button>
-        <p class="small">Android: Chrome/Edge. iPhone: Safari → Teilen → Zum Home-Bildschirm. Nach der Installation erscheint das Cavalyra Icon.</p>
       </div>
       <div class="card">
         <h2>Meine Pferde</h2>
@@ -5066,7 +5285,6 @@ function downloadCurrentScanPdf(){
   const idx = scans.findIndex(s=>s.id===scan.id);
   const previous = idx>0 ? scans[idx-1] : null;
   const horse=activeHorseName();
-  const w=window.open("","_blank");
   const findings=(scan.findings||[]).map(f=>"<li>"+esc(f)+"</li>").join("");
   const photos = scan.photos || {};
   const labels = {right:"Seitlich rechts",left:"Seitlich links",front:"Von vorne",back:"Von hinten",top:"Von oben"};
@@ -5082,84 +5300,207 @@ function downloadCurrentScanPdf(){
     const ext = scan.exteriorScore - previous.exteriorScore;
     const bc = scan.bodyCondition - previous.bodyCondition;
     const items = [];
-    if(muscle>0) items.push(`Muskulatur +${muscle}%`);
-    if(sym>0) items.push(`Symmetrie +${sym}%`);
-    if(ext>0) items.push(`Exterieur +${ext}%`);
-    if(bc<0) items.push(`Body Condition verbessert (${previous.bodyCondition}/9 → ${scan.bodyCondition}/9)`);
+    if(muscle>0) items.push(`Muskulatur verbessert`);
+    if(sym>0) items.push(`Symmetrie verbessert`);
+    if(ext>0) items.push(`Exterieur verbessert`);
+    if(bc<0) items.push(`Körperkondition verbessert (${previous.bodyCondition}/9 → ${scan.bodyCondition}/9)`);
     compareHtml = `<div class="box positive"><h3>Vergleich zum Scan vom ${previous.date}</h3>${items.length ? "<ul>"+items.map(i=>"<li>"+i+"</li>").join("")+"</ul>" : "Noch keine klare positive Veränderung im Vergleich zum letzten Scan. Weiter beobachten und erneut scannen."}</div>`;
   } else {
     compareHtml = `<div class="box"><h3>Verlauf</h3>Dies ist der erste Scan für ${horse}. Ab dem nächsten Scan zeigt Cavalyra automatisch positive Entwicklungen und Veränderungen.</div>`;
   }
-  w.document.write(`
-    <html><head><title>Cavalyra Body Scan Report</title>
-    <style>
-      body{font-family:Arial,sans-serif;padding:30px;line-height:1.5;color:#2C1A0E}
-      h1{color:#7D4E57;margin-bottom:4px} h2,h3{color:#3D2030}
-      .box{border:1px solid #E8DDD4;border-radius:12px;padding:14px;margin:12px 0;background:#FFF9F6}
-      .scores{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-      .score{border:1px solid #E8DDD4;border-radius:10px;padding:10px;text-align:center;background:#FAF7F2}
-      .score b{display:block;font-size:24px;color:#7D4E57}
-      .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-      .photo{border:1px solid #E8DDD4;border-radius:10px;padding:8px;text-align:center;font-size:12px;background:#FAF7F2}
-      .photo img{width:100%;max-height:220px;object-fit:contain;border-radius:8px}
-      .positive{border-left:5px solid #4A7C59}
-      .note{font-size:11px;color:#7A5A52;margin-top:18px}.legal-gate,.legal-modal,#legalGate,#legalTextPanel{display:none!important}
-      @media print{body{padding:15px}.photo img{max-height:180px}}
-    </style></head><body>
-    <h1>CAVALYRA BODY SCAN REPORT</h1>
+
+  const reportInner = `
+    <h1 style="color:#7D4E57;margin:0 0 4px">CAVALYRA BODY SCAN REPORT</h1>
     <div>Screening-Bericht für Pferd, Exterieur und Verlauf</div>
-    <div class="box"><b>Pferd:</b> ${horse}<br><b>Datum:</b> ${scan.date}<br><b>Scan:</b> #${scans.length}</div>
+    <div class="box"><b>Pferd:</b> ${esc(horse)}<br><b>Datum:</b> ${esc(scan.date)}<br><b>Scan:</b> #${scans.length}</div>
     <div class="box"><h3>Gesamteindruck</h3>
       <p><b>Körperzustand:</b> ${esc(describeBodyCondition(scan.bodyCondition).title)}</p>
       <p><b>Muskulatur:</b> ${esc(describeMuscle(scan.muscleScore).title)}</p>
       <p><b>Symmetrie:</b> ${esc(describeSymmetry(scan.symmetryScore).title)}</p>
       <p><b>Exterieur:</b> ${esc(describeExterior(scan.exteriorScore).title)}</p>
     </div>
-    <div class="box" id="CAVALYRA_BODYSCAN_PDF_ASSESSMENTS"><h3>Ausführliche Einschätzung</h3>
-      <p><b>Körperzustand:</b> ${esc((scan.assessment?.body?.title)||describeBodyCondition(scan.bodyCondition).title)}<br>${esc((scan.assessment?.body?.text)||describeBodyCondition(scan.bodyCondition).text)}</p>
+    <div class="box"><h3>Ausführliche Einschätzung</h3>
+      <p><b>Körperzustand:</b><br>${esc((scan.assessment?.body?.text)||describeBodyCondition(scan.bodyCondition).text)}</p>
       <ul>${((scan.assessment?.body?.tips)||describeBodyCondition(scan.bodyCondition).tips).map(t=>"<li>"+esc(t)+"</li>").join("")}</ul>
-      <p><b>Muskulatur:</b> ${esc((scan.assessment?.muscle?.title)||describeMuscle(scan.muscleScore).title)}<br>${esc((scan.assessment?.muscle?.text)||describeMuscle(scan.muscleScore).text)}</p>
+      <p><b>Muskulatur:</b><br>${esc((scan.assessment?.muscle?.text)||describeMuscle(scan.muscleScore).text)}</p>
       <ul>${((scan.assessment?.muscle?.tips)||describeMuscle(scan.muscleScore).tips).map(t=>"<li>"+esc(t)+"</li>").join("")}</ul>
-      <p><b>Symmetrie:</b> ${esc((scan.assessment?.symmetry?.title)||describeSymmetry(scan.symmetryScore).title)}<br>${esc((scan.assessment?.symmetry?.text)||describeSymmetry(scan.symmetryScore).text)}</p>
+      <p><b>Symmetrie:</b><br>${esc((scan.assessment?.symmetry?.text)||describeSymmetry(scan.symmetryScore).text)}</p>
       <ul>${((scan.assessment?.symmetry?.tips)||describeSymmetry(scan.symmetryScore).tips).map(t=>"<li>"+esc(t)+"</li>").join("")}</ul>
-      <p><b>Exterieur:</b> ${esc((scan.assessment?.exterior?.title)||describeExterior(scan.exteriorScore).title)}<br>${esc((scan.assessment?.exterior?.text)||describeExterior(scan.exteriorScore).text)}</p>
+      <p><b>Exterieur:</b><br>${esc((scan.assessment?.exterior?.text)||describeExterior(scan.exteriorScore).text)}</p>
       <ul>${((scan.assessment?.exterior?.tips)||describeExterior(scan.exteriorScore).tips).map(t=>"<li>"+esc(t)+"</li>").join("")}</ul>
     </div>
     <div class="box"><h3>Fotos</h3><div class="photos">${photoHtml || "Keine Fotos im Report gespeichert."}</div></div>
     <div class="box"><h3>Auffälligkeiten</h3><ul>${findings}</ul></div>
     ${compareHtml}
-    <div class="box"><h3>Empfehlung</h3>${scan.recommendation||""}</div>
+    <div class="box"><h3>Empfehlung</h3>${esc(scan.recommendation||"")}</div>
     <p class="note">Der Cavalyra Body Scanner dient der Beobachtung und Dokumentation möglicher Veränderungen und ersetzt keine tierärztliche, osteopathische oder sattelfachliche Diagnose. Bei deutlichen Auffälligkeiten, Lahmheit, Schmerzzeichen oder plötzlichen Veränderungen bitte Fachperson hinzuziehen.</p>
-    
+  `;
 
-<div id="legalModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(20,10,15,.78);z-index:99999;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(8px);">
-  <div style="width:min(760px,100%);max-height:92vh;overflow:auto;background:#fff;border:1px solid #E8DDD4;border-radius:24px;padding:24px;box-shadow:0 25px 90px rgba(0,0,0,.36);color:#2C1A0E;font-family:inherit;line-height:1.55;">
-    <div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><button onclick="closeLegalModal()" style="border:1px solid #E8DDD4;background:#FFF9F6;border-radius:999px;padding:8px 14px;cursor:pointer;font-weight:700;">Schließen</button></div>
-    <div id="legalModalContent"></div>
-  </div>
-</div>
-<\script>
-function openLegalModal(key){
-  var c=document.getElementById('legalModalContent');
-  var o=document.getElementById('legalModalOverlay');
-  if(!c||!o||typeof CAVALYRA_LEGAL_TEXTS==='undefined') return;
-  c.innerHTML=CAVALYRA_LEGAL_TEXTS[key]||'<p>Inhalt nicht verfügbar.</p>';
-  o.style.display='flex';
-  c.parentElement.scrollTop=0;
-}
-function closeLegalModal(){
-  var o=document.getElementById('legalModalOverlay');
-  if(o) o.style.display='none';
-}
-document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLegalModal();});
-document.getElementById('legalModalOverlay').addEventListener('click',function(e){if(e.target===this)closeLegalModal();});
-<\/script>
+  // In-App Overlay statt window.open – mit Schließen-Button und Zurück-Verhalten
+  let overlay = document.getElementById("cavalyraPdfOverlay");
+  if(overlay) overlay.remove();
+  overlay = document.createElement("div");
+  overlay.id = "cavalyraPdfOverlay";
+  overlay.setAttribute("role","dialog");
+  overlay.setAttribute("aria-modal","true");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(20,10,15,.92);z-index:100000;display:flex;flex-direction:column;";
+  overlay.innerHTML = `
+    <div id="cavalyraPdfHeader" style="display:flex;gap:8px;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 10px 12px;background:#3D2030;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);flex-wrap:wrap;">
+      <button id="cavalyraPdfClose" type="button" aria-label="Zurück zum Ergebnis" style="border:0;background:rgba(255,249,246,.95);color:#3D2030;border-radius:8px;padding:7px 11px;font-weight:600;font-size:13px;cursor:pointer;line-height:1;min-height:36px;">← Zurück</button>
+      <strong style="color:#fff;font-size:13px;flex:1;text-align:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Body Scan Report</strong>
+      <button id="cavalyraPdfPrint" type="button" aria-label="Als PDF speichern" style="border:0;background:#A86E78;color:#fff;border-radius:8px;padding:7px 11px;font-weight:600;font-size:13px;cursor:pointer;line-height:1;min-height:36px;">🖨 PDF</button>
+    </div>
+    <div id="cavalyraPdfBody" style="flex:1;overflow:auto;background:#fff;color:#2C1A0E;padding:20px;font-family:Arial,sans-serif;line-height:1.5;-webkit-overflow-scrolling:touch;">
+      <style>
+        #cavalyraPdfBody .box{border:1px solid #E8DDD4;border-radius:12px;padding:14px;margin:12px 0;background:#FFF9F6}
+        #cavalyraPdfBody h3{color:#3D2030;margin:0 0 8px}
+        #cavalyraPdfBody .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+        #cavalyraPdfBody .photo{border:1px solid #E8DDD4;border-radius:10px;padding:8px;text-align:center;font-size:12px;background:#FAF7F2}
+        #cavalyraPdfBody .photo img{width:100%;max-height:220px;object-fit:contain;border-radius:8px}
+        #cavalyraPdfBody .positive{border-left:5px solid #4A7C59}
+        #cavalyraPdfBody .note{font-size:11px;color:#7A5A52;margin-top:18px}
+      </style>
+      ${reportInner}
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const prevBodyOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  function closePdfOverlay(){
+    const ov = document.getElementById("cavalyraPdfOverlay");
+    if(ov) ov.remove();
+    document.body.style.overflow = prevBodyOverflow || "";
+    window.removeEventListener("keydown", escHandler);
+    window.removeEventListener("popstate", popHandler);
+  }
+  function escHandler(e){ if(e.key === "Escape") closePdfOverlay(); }
+  function popHandler(){ closePdfOverlay(); }
+  window.addEventListener("keydown", escHandler);
+  try{ history.pushState({ cavalyraPdfOpen: true }, ""); window.addEventListener("popstate", popHandler, { once:true }); }catch(e){}
+  document.getElementById("cavalyraPdfClose").onclick = ()=>{
+    try{ if(history.state && history.state.cavalyraPdfOpen) history.back(); else closePdfOverlay(); }catch(e){ closePdfOverlay(); }
+  };
 
-</body></html>
-  `);
-  w.document.close();
-  w.focus();
-  w.print();
+  document.getElementById("cavalyraPdfPrint").onclick = async ()=>{
+    const btn = document.getElementById("cavalyraPdfPrint");
+    const reportBody = document.getElementById("cavalyraPdfBody");
+    if(!reportBody) return;
+    const safeHorse = (horse || "Pferd").replace(/[^a-zA-Z0-9_-]+/g,"_");
+    const safeDate = (scan.date || new Date().toISOString().slice(0,10)).replace(/[^0-9-]/g,"-");
+    const filename = `Cavalyra_Bodyscan_${safeHorse}_${safeDate}.pdf`;
+    const origText = btn.textContent;
+    btn.disabled = true; btn.textContent = "⏳ PDF…";
+    try{
+      await generateAndDeliverScanPdf(reportBody, filename);
+    }catch(err){
+      console.error("PDF Fehler:", err);
+      toast && toast("PDF konnte nicht erstellt werden.");
+    }finally{
+      btn.disabled = false; btn.textContent = origText;
+    }
+  };
+}
+
+/* ===== Native PDF Export (jsPDF + html2canvas, Capacitor Share/Filesystem) ===== */
+function loadScriptOnce(src){
+  return new Promise((resolve, reject)=>{
+    if(document.querySelector('script[data-src="'+src+'"]')){ return resolve(); }
+    const s = document.createElement("script");
+    s.src = src; s.async = true; s.setAttribute("data-src", src);
+    s.onload = ()=>resolve();
+    s.onerror = ()=>reject(new Error("Konnte nicht laden: "+src));
+    document.head.appendChild(s);
+  });
+}
+async function ensurePdfLibs(){
+  if(!window.html2canvas){
+    await loadScriptOnce("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
+  }
+  if(!(window.jspdf && window.jspdf.jsPDF)){
+    await loadScriptOnce("https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js");
+  }
+}
+async function generateAndDeliverScanPdf(sourceEl, filename){
+  await ensurePdfLibs();
+  const { jsPDF } = window.jspdf;
+  // Render in offscreen clone with fixed width for consistent A4 rendering
+  const clone = sourceEl.cloneNode(true);
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;padding:24px;color:#2C1A0E;font-family:Arial,sans-serif;line-height:1.5;";
+  wrap.appendChild(clone);
+  document.body.appendChild(wrap);
+  let canvas;
+  try{
+    canvas = await window.html2canvas(wrap, { scale:2, useCORS:true, backgroundColor:"#ffffff", logging:false });
+  } finally {
+    wrap.remove();
+  }
+  const pdf = new jsPDF({ unit:"mm", format:"a4", orientation:"portrait" });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const margin = 8;
+  const imgW = pageW - margin*2;
+  const imgH = canvas.height * imgW / canvas.width;
+  const imgData = canvas.toDataURL("image/jpeg", 0.92);
+  if(imgH <= pageH - margin*2){
+    pdf.addImage(imgData, "JPEG", margin, margin, imgW, imgH);
+  } else {
+    // Slice canvas into pages
+    const pxPerMm = canvas.width / imgW;
+    const pagePxH = Math.floor((pageH - margin*2) * pxPerMm);
+    let y = 0;
+    while(y < canvas.height){
+      const sliceH = Math.min(pagePxH, canvas.height - y);
+      const slice = document.createElement("canvas");
+      slice.width = canvas.width; slice.height = sliceH;
+      slice.getContext("2d").drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+      const sliceData = slice.toDataURL("image/jpeg", 0.92);
+      const sliceMm = sliceH / pxPerMm;
+      if(y > 0) pdf.addPage();
+      pdf.addImage(sliceData, "JPEG", margin, margin, imgW, sliceMm);
+      y += sliceH;
+    }
+  }
+  const isNative = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  if(isNative){
+    // Save to cache and open native share sheet
+    try{
+      const base64 = pdf.output("datauristring").split(",")[1];
+      const Filesystem = window.Capacitor.Plugins.Filesystem;
+      const Share = window.Capacitor.Plugins.Share;
+      const written = await Filesystem.writeFile({
+        path: filename,
+        data: base64,
+        directory: "CACHE",
+        recursive: true
+      });
+      try{
+        await Share.share({
+          title: "Cavalyra Body Scan Report",
+          text: filename,
+          url: written.uri,
+          dialogTitle: "PDF speichern oder teilen"
+        });
+      }catch(shareErr){
+        // User cancelled or no share target – stay in report, no browser opens
+        console.log("Share abgebrochen:", shareErr && shareErr.message);
+      }
+      return;
+    }catch(nativeErr){
+      console.warn("Native PDF Share fehlgeschlagen, fallback Download:", nativeErr);
+    }
+  }
+  // Web/Desktop fallback: direct download
+  try{
+    pdf.save(filename);
+  }catch(e){
+    const blob = pdf.output("blob");
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }
 }
 
 
@@ -5240,6 +5581,27 @@ document.addEventListener("change", function(ev){
 })();
 
 /* SW registration handled at top of file (single source of truth). */
+
+/* Expose core state & helpers so external scripts (z. B. Google Play Billing
+   in /billing/cavalyra-billing.js) den Pro-Status setzen und ein Re-Render
+   auslösen können. Ohne dieses Bridging bleibt window.state undefined und
+   ein erfolgreicher Kauf schaltet die Pro-Bereiche nicht frei. */
+try {
+  window.state = state;
+  window.saveLicense = saveLicense;
+  window.normalizeLicense = normalizeLicense;
+  window.hasProAccess = hasProAccess;
+  window.render = render;
+  window.navigate = navigate;
+  if (typeof toast === "function") window.toast = toast;
+  if (typeof esc === "function") window.esc = esc;
+  if (typeof licenseStatusLabel === "function") window.licenseStatusLabel = licenseStatusLabel;
+  if (typeof licenseStatusClass === "function") window.licenseStatusClass = licenseStatusClass;
+  if (typeof licenseStatusText  === "function") window.licenseStatusText  = licenseStatusText;
+  if (typeof renderPro === "function") window.renderPro = renderPro;
+  window.dispatchEvent(new CustomEvent("cavalyra:ready"));
+  console.log("[Cavalyra] Bridge bereit – window.state/render/saveLicense exportiert.");
+} catch(e){ console.error("[Cavalyra] Bridge-Export fehlgeschlagen", e); }
 
 </script>
 </body>

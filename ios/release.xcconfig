@@ -1,0 +1,26 @@
+// Cavalyra iOS – Release Signing Configuration
+//
+// This file is under version control but contains NO secrets and NO placeholders.
+// All signing values are pulled from environment variables at build time so the
+// same project works locally, on a remote Mac (Scaleway) and in CI/CD
+// (Codemagic, GitHub Actions, Xcode Cloud).
+//
+// Required environment variables (or entries in ios/.env.local, see below):
+//   DEVELOPMENT_TEAM                  – 10-char Apple Team ID (e.g. 228M5VDU87)
+//   PROVISIONING_PROFILE_SPECIFIER    – exact App Store profile name
+//
+// Optional overrides:
+//   PRODUCT_BUNDLE_IDENTIFIER         – defaults to de.cavalyra.app
+//   CODE_SIGN_IDENTITY                – defaults to "Apple Distribution"
+//
+// For local Macs the helper script `scripts/setup-ios-signing.sh` will read
+// `ios/.env.local` (git-ignored) and export these values before invoking
+// xcodebuild / Xcode. In CI they are provided directly by the runner secrets.
+
+#include? "signing.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(DEVELOPMENT_TEAM)
+PROVISIONING_PROFILE_SPECIFIER = $(PROVISIONING_PROFILE_SPECIFIER)
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = Apple Distribution
+PRODUCT_BUNDLE_IDENTIFIER = de.cavalyra.app

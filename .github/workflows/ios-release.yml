@@ -1,0 +1,112 @@
+# Cavalyra – GitHub Actions iOS App Store release
+# Trigger: manual (workflow_dispatch) or push of a v*.*.* tag.
+#
+# Required repository secrets:
+#   DEVELOPMENT_TEAM                 - 10-char Apple Team ID (228M5VDU87)
+#   PROVISIONING_PROFILE_SPECIFIER   - exact profile name
+#   APPLE_DIST_CERT_P12_BASE64       - Apple Distribution .p12, base64 encoded
+#   APPLE_DIST_CERT_PASSWORD         - password for the .p12
+#   APPLE_PROVISIONING_PROFILE_BASE64- .mobileprovision, base64 encoded
+#   APP_STORE_CONNECT_ISSUER_ID      - App Store Connect API issuer UUID
+#   APP_STORE_CONNECT_KEY_ID         - API key ID
+#   APP_STORE_CONNECT_PRIVATE_KEY    - contents of the .p8 file
+#
+# Generate the base64 blobs locally:
+#   base64 -i AppleDist.p12 | pbcopy
+#   base64 -i Cavalyra_AppStore.mobileprovision | pbcopy
+
+name: iOS App Store Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  archive-and-upload:
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+      PROVISIONING_PROFILE_SPECIFIER: ${{ secrets.PROVISIONING_PROFILE_SPECIFIER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web + Capacitor sync
+        run: |
+          npm run build
+          npx cap sync ios
+
+      - name: Generate signing.local.xcconfig
+        run: bash scripts/setup-ios-signing.sh
+
+      - name: Import Apple Distribution certificate
+        env:
+          CERT_B64: ${{ secrets.APPLE_DIST_CERT_P12_BASE64 }}
+          CERT_PASS: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          echo "$CERT_B64" | base64 -d > /tmp/dist.p12
+          security import /tmp/dist.p12 -k "$KEYCHAIN" -P "$CERT_PASS" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+
+      - name: Install provisioning profile
+        env:
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$PROFILE_B64" | base64 -d \
+            > "$HOME/Library/MobileDevice/Provisioning Profiles/Cavalyra_AppStore.mobileprovision"
+
+      - name: Archive
+        run: |
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath ios/build/App.xcarchive \
+            clean archive
+
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath ios/build/App.xcarchive \
+            -exportPath ios/build/export \
+            -exportOptionsPlist ios/ExportOptions.plist
+
+      - name: Upload to App Store Connect
+        env:
+          ASC_ISSUER: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          xcrun altool --upload-app \
+            -f ios/build/export/App.ipa -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-build
+          path: |
+            ios/build/export/*.ipa
+            ios/build/App.xcarchive

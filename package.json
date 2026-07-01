@@ -1,0 +1,42 @@
+{
+  "name": "cavalyra-preview",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:dev": "vite build --mode development",
+    "preview": "vite preview",
+    "cap:sync": "vite build && cap sync android",
+    "cap:open": "cap open android",
+    "android:run": "vite build && cap sync android && cap run android",
+    "ios:sync": "vite build && cap sync ios",
+    "ios:open": "cap open ios",
+    "ios:run": "vite build && cap sync ios && cap run ios",
+    "ios:prepare": "bash scripts/ios-prepare.sh",
+    "ios:check": "bash scripts/check-ios-environment.sh",
+    "ios:archive": "bash scripts/ios-archive.sh",
+    "ios:signing": "bash scripts/setup-ios-signing.sh"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "typescript": "^6.0.3",
+    "vite": "^5.4.0"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/camera": "^8.2.0",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/geolocation": "^8.2.0",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.4.1",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.1",
+    "@capacitor/splash-screen": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.2",
+    "@supabase/supabase-js": "^2.106.2",
+    "cordova-plugin-purchase": "^13.17.2"
+  }
+}

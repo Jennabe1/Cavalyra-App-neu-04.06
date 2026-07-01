@@ -1,0 +1,193 @@
+# Cavalyra – iOS Build & Release Guide
+
+Production-ready workflow for building and shipping Cavalyra to the App Store
+from a **fresh Apple Silicon Mac** or from **CI/CD** (Codemagic / GitHub Actions).
+No placeholder values, no manual edits to `project.pbxproj` required.
+
+---
+
+## TL;DR
+
+```bash
+# One-time on a fresh Mac
+xcode-select --install
+sudo xcodebuild -license accept
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install node@20 && brew link --overwrite --force node@20
+
+# Every checkout
+cp ios/.env.example ios/.env.local     # fill in your Team ID + profile name
+bash scripts/ios-prepare.sh            # install, build, cap sync, signing
+npm run ios:open                       # opens Xcode → Product → Archive
+```
+
+Sanity check anytime: `bash scripts/check-ios-environment.sh`.
+
+---
+
+## 1. Fresh Mac setup (Apple Silicon, macOS 14+)
+
+```bash
+# Command line dev tools
+xcode-select --install
+sudo xcodebuild -license accept
+
+# Homebrew (adds itself to ~/.zprofile automatically on Apple Silicon)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+# Node 20 (LTS – newer versions also fine)
+brew install node@20
+brew link --overwrite --force node@20
+```
+
+Install **Xcode** from the Mac App Store (≥ 15, we test up to Xcode 16 /
+iOS 18 SDK). No CocoaPods needed – the project uses Swift Package Manager.
+
+---
+
+## 2. Project setup
+
+```bash
+git clone <repo> cavalyra && cd cavalyra
+cp ios/.env.example ios/.env.local
+# edit ios/.env.local:
+#   DEVELOPMENT_TEAM=228M5VDU87
+#   PROVISIONING_PROFILE_SPECIFIER=Cavalyra App Store
+bash scripts/ios-prepare.sh
+```
+
+`ios-prepare.sh` runs `npm install`, `npm run build`, `npx cap sync ios` and
+generates `ios/signing.local.xcconfig` from `.env.local`. The xcconfig is
+auto-included by `ios/release.xcconfig` – no `project.pbxproj` edits, ever.
+
+---
+
+## 3. Archive & upload (local, via Xcode)
+
+```bash
+npm run ios:open
+```
+
+In Xcode:
+
+1. **Any iOS Device (arm64)** as destination.
+2. **Product → Archive**.
+3. Organizer → **Distribute App → App Store Connect → Upload**.
+
+Signing is already `Manual / Apple Distribution` with values from
+`signing.local.xcconfig`. No development profile is needed – Debug is
+configured with `CODE_SIGNING_ALLOWED=NO` so the project opens without a
+registered device.
+
+---
+
+## 4. Archive & upload (fully headless)
+
+```bash
+bash scripts/ios-archive.sh
+xcrun altool --upload-app \
+  -f ios/build/export/App.ipa -t ios \
+  --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+  --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+```
+
+The script drives `xcodebuild archive` + `-exportArchive` using
+`ios/ExportOptions.plist` (method `app-store`, manual signing, team
+`228M5VDU87`, profile from `$PROVISIONING_PROFILE_SPECIFIER`).
+
+---
+
+## 5. CI/CD
+
+Two production pipelines are checked into the repo:
+
+### Codemagic — `codemagic.yaml` (recommended)
+Uses Codemagic's App Store Connect integration to fetch signing files
+automatically. No .p12/.mobileprovision handling – just set the group vars
+`DEVELOPMENT_TEAM` and `PROVISIONING_PROFILE_SPECIFIER` plus the App Store
+Connect API key. TestFlight upload is built in.
+
+### GitHub Actions — `.github/workflows/ios-release.yml`
+Runs on `macos-14`. Required repository secrets:
+
+| Secret | Purpose |
+|---|---|
+| `DEVELOPMENT_TEAM` | Apple Team ID |
+| `PROVISIONING_PROFILE_SPECIFIER` | Exact App Store profile name |
+| `APPLE_DIST_CERT_P12_BASE64` | `base64 -i AppleDist.p12` |
+| `APPLE_DIST_CERT_PASSWORD` | Password for the .p12 |
+| `APPLE_PROVISIONING_PROFILE_BASE64` | `base64 -i profile.mobileprovision` |
+| `APP_STORE_CONNECT_ISSUER_ID` | ASC API issuer UUID |
+| `APP_STORE_CONNECT_KEY_ID` | ASC API key ID |
+| `APP_STORE_CONNECT_PRIVATE_KEY` | Contents of the `.p8` file |
+
+Trigger: push a `v*.*.*` tag or run the workflow manually. Uploads to App
+Store Connect via `altool` – TestFlight processes automatically.
+
+### Xcode Cloud
+Also compatible: point a workflow at the `App` scheme, add `DEVELOPMENT_TEAM`
+and `PROVISIONING_PROFILE_SPECIFIER` as environment variables, use
+`ci_scripts/ci_post_clone.sh` to call `bash scripts/ios-prepare.sh`. Not
+included by default because it duplicates Codemagic.
+
+---
+
+## 6. Versioning
+
+Bump `MARKETING_VERSION` (visible version, e.g. `1.2.0`) in Xcode → target
+**App → General → Identity**, or from the CLI:
+
+```bash
+cd ios/App
+agvtool new-marketing-version 1.2.0
+agvtool new-version -all $NEW_BUILD_NUMBER
+```
+
+CI bumps the build number automatically (`agvtool new-version -all $BUILD_NUMBER`).
+
+---
+
+## 7. Signing model — why this works
+
+- `ios/release.xcconfig` is committed. It references `$(DEVELOPMENT_TEAM)`
+  and `$(PROVISIONING_PROFILE_SPECIFIER)` and includes an optional
+  `signing.local.xcconfig`.
+- `ios/signing.local.xcconfig` is **git-ignored** and generated by
+  `scripts/setup-ios-signing.sh` from either `ios/.env.local` or the CI
+  environment. It never contains placeholders.
+- `project.pbxproj` sets `CODE_SIGN_STYLE = Manual` and
+  `CODE_SIGN_IDENTITY = Apple Distribution` for Release, and disables
+  signing entirely for Debug (`CODE_SIGNING_ALLOWED = NO`) so the project
+  opens on any Mac – including remote/Scaleway – without a registered
+  development device.
+
+Result: the checked-in project archives directly with **Apple Distribution**
+as soon as `DEVELOPMENT_TEAM` and `PROVISIONING_PROFILE_SPECIFIER` are
+provided (locally via `.env.local`, in CI via secrets). Nothing else to edit.
+
+---
+
+## 8. In-App Purchases
+
+- Product ID: `de.cavalyra.app.pro.monthly` (Auto-Renewable, 1 month,
+  6,99 €, 3-day free trial).
+- Xcode → **Signing & Capabilities → + Capability → In-App Purchase**
+  (already in the default entitlements when this repo is fresh; if missing,
+  add it once – it is persisted in the project).
+- Sandbox testing: create a Sandbox Tester in App Store Connect →
+  Users and Access → Sandbox Testers.
+
+---
+
+## 9. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Missing package product CapApp-SPM` | `npx cap sync ios` – regenerates Cordova bridge sources. |
+| `Your team has no devices…` on Archive | Ensure `signing.local.xcconfig` exists (`bash scripts/setup-ios-signing.sh`). Debug signing is disabled by design; Archive uses Release only. |
+| `No profiles for 'de.cavalyra.app'` | Provisioning profile name mismatch – set the exact name from developer.apple.com → Profiles into `PROVISIONING_PROFILE_SPECIFIER`. |
+| `xcodebuild: error: unable to find utility "altool"` | Xcode CLT out of date. `sudo xcode-select --switch /Applications/Xcode.app`. |
+| Archive succeeds but TestFlight rejects binary | Check that `ITSAppUsesNonExemptEncryption=false` is still in `Info.plist` (it is by default in this repo). |
+
+Run `bash scripts/check-ios-environment.sh` for a full diagnostic.

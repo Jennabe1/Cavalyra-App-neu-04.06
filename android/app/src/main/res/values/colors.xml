@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cavalyra_splash_background">#5C3540</color>
+    <color name="colorPrimary">#5C3540</color>
+    <color name="colorPrimaryDark">#3D2030</color>
+    <color name="colorAccent">#A87080</color>
+</resources>

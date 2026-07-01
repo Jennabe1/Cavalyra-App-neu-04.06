@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash disabled: solid brand background only, no logo/bitmap. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <color android:color="@color/cavalyra_splash_background" />
+    </item>
+</layer-list>

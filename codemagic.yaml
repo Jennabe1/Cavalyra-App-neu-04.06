@@ -1,0 +1,66 @@
+# Cavalyra – Codemagic CI/CD for iOS App Store releases
+# Docs: https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
+#
+# Required Codemagic setup (once):
+#   1. Connect the Git repo.
+#   2. Under "Teams → Integrations", add App Store Connect API key
+#      (Issuer ID + Key ID + .p8) → this exposes APP_STORE_CONNECT_* vars.
+#   3. Under "Code signing identities", upload the Apple Distribution
+#      certificate (.p12) + the App Store provisioning profile, OR let
+#      Codemagic manage them automatically (recommended, shown below).
+#   4. Add environment variables (Environment variables → cavalyra group):
+#        DEVELOPMENT_TEAM                = 228M5VDU87
+#        PROVISIONING_PROFILE_SPECIFIER  = <exact profile name>
+
+workflows:
+  ios-appstore:
+    name: iOS App Store Release
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      groups:
+        - cavalyra                 # DEVELOPMENT_TEAM, PROVISIONING_PROFILE_SPECIFIER
+        - app_store_credentials    # APP_STORE_CONNECT_ISSUER_ID / KEY_IDENTIFIER / PRIVATE_KEY
+      node: 20
+      xcode: latest
+      vars:
+        BUNDLE_ID: "de.cavalyra.app"
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+    scripts:
+      - name: Install dependencies
+        script: npm ci
+      - name: Build web + Capacitor sync
+        script: |
+          npm run build
+          npx cap sync ios
+      - name: Fetch signing files from App Store Connect
+        script: |
+          app-store-connect fetch-signing-files "$BUNDLE_ID" \
+            --type IOS_APP_STORE --create
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+      - name: Use profiles
+        script: xcode-project use-profiles
+      - name: Bump build number
+        script: |
+          cd ios/App
+          agvtool new-version -all $(($BUILD_NUMBER + 1))
+      - name: Generate signing.local.xcconfig
+        script: bash scripts/setup-ios-signing.sh
+      - name: Archive
+        script: |
+          xcode-project build-ipa \
+            --workspace "$XCODE_WORKSPACE" \
+            --scheme "$XCODE_SCHEME" \
+            --config Release
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app.dSYM.zip
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - Internal Testers

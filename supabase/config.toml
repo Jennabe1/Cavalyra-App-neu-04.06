@@ -1,0 +1,4 @@
+project_id = "upbubifdcndfxbvmgwzg"
+
+[functions.body-scan-analyze]
+verify_jwt = false
