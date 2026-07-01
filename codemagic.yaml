@@ -28,7 +28,7 @@ workflows:
         BUNDLE_ID: "de.cavalyra.app"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
-        APP_STORE_APPLE_ID: ""     # optional: numeric App Store Connect app ID
+        APP_STORE_APPLE_ID: "6785490497"
     scripts:
       - name: Install dependencies
         script: npm ci
