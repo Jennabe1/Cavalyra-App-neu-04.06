@@ -22,7 +22,7 @@ workflows:
     environment:
       groups:
         - cavalyra                 # DEVELOPMENT_TEAM, PROVISIONING_PROFILE_SPECIFIER
-      node: 20
+      node: 22
       xcode: latest
       vars:
         BUNDLE_ID: "de.cavalyra.app"
