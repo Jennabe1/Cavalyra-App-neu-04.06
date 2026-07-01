@@ -45,6 +45,15 @@ workflows:
         script: |
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
+      - name: Assign provisioning profile to target
+        # ios_signing fetches the profile & imports the cert into the keychain,
+        # but for a manually-signed Capacitor/SPM .xcodeproj we still need to
+        # patch the target so xcodebuild knows which profile + team + identity
+        # to use. `xcode-project use-profiles` does exactly that using the
+        # profiles already downloaded to ~/Library/MobileDevice/Provisioning Profiles.
+        script: |
+          xcode-project use-profiles \
+            --project "$XCODE_PROJECT"
       - name: Build IPA
         # No CocoaPods → no .xcworkspace. Build the .xcodeproj directly.
         script: |
