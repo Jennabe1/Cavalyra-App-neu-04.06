@@ -1,18 +1,6 @@
 # Cavalyra – Codemagic CI/CD for iOS App Store releases
 # Docs: https://docs.codemagic.io/yaml-code-signing/signing-ios/
 #        https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
-#
-# Signing model (unchanged, already working):
-#   - Apple Distribution certificate + private key stored in Codemagic
-#   - App Store Connect API integration named "Codemagic"
-#   - environment.ios_signing pulls identity + fetches/creates profile,
-#     imports into keychain, and patches the Xcode project automatically.
-#
-# Build target:
-#   This Capacitor project has NO CocoaPods and therefore NO .xcworkspace –
-#   only ios/App/App.xcodeproj exists (with SPM via CapApp-SPM). We therefore
-#   build the .xcodeproj directly via `xcode-project build-ipa --project`,
-#   which is the officially supported path per Codemagic docs.
 
 workflows:
   ios-appstore:
@@ -20,11 +8,11 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     integrations:
-      app_store_connect: Codemagic   # must match Team → Integrations exactly
+      app_store_connect: Codemagic
     environment:
       groups:
-        - cavalyra                 # DEVELOPMENT_TEAM
-      node: 22                     # Capacitor 8 requires Node >= 20.19 / >= 22
+        - cavalyra
+      node: 22
       xcode: latest
       vars:
         BUNDLE_ID: "de.cavalyra.app"
@@ -45,23 +33,26 @@ workflows:
         script: |
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
-      - name: Assign provisioning profile to target
-        # ios_signing fetches the profile & imports the cert into the keychain,
-        # but for a manually-signed Capacitor/SPM .xcodeproj we still need to
-        # patch the target so xcodebuild knows which profile + team + identity
-        # to use. `xcode-project use-profiles` does exactly that using the
-        # profiles already downloaded to ~/Library/MobileDevice/Provisioning Profiles.
+      - name: Assign provisioning profile to target and generate ExportOptions
+        # `xcode-project use-profiles` patches the Xcode project with the
+        # correct DEVELOPMENT_TEAM / PROVISIONING_PROFILE_SPECIFIER / CODE_SIGN_IDENTITY
+        # from the profiles that ios_signing downloaded, AND writes a fully
+        # resolved export options plist to /tmp/export_options.plist that we
+        # use for the IPA export (avoids the $(PROVISIONING_PROFILE_SPECIFIER)
+        # placeholder never being substituted).
         script: |
           xcode-project use-profiles \
-            --project "$XCODE_PROJECT"
+            --project "$XCODE_PROJECT" \
+            --export-options-plist /tmp/export_options.plist
+          echo "--- Generated /tmp/export_options.plist ---"
+          cat /tmp/export_options.plist
       - name: Build IPA
-        # No CocoaPods → no .xcworkspace. Build the .xcodeproj directly.
         script: |
           xcode-project build-ipa \
             --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME" \
             --config Release \
-            --export-options-plist "ios/ExportOptions.plist"
+            --export-options-plist /tmp/export_options.plist
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
