@@ -1,16 +1,20 @@
 # Cavalyra – Codemagic CI/CD for iOS App Store releases
 # Docs: https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
 #
-# Required Codemagic setup (once):
+# One-time Codemagic setup:
 #   1. Connect the Git repo.
-#   2. Under "Teams → Integrations", add App Store Connect API key
-#      (Issuer ID + Key ID + .p8) → this exposes APP_STORE_CONNECT_* vars.
-#   3. Under "Code signing identities", upload the Apple Distribution
-#      certificate (.p12) + the App Store provisioning profile, OR let
-#      Codemagic manage them automatically (recommended, shown below).
-#   4. Add environment variables (Environment variables → cavalyra group):
-#        DEVELOPMENT_TEAM                = 228M5VDU87
-#        PROVISIONING_PROFILE_SPECIFIER  = <exact profile name>
+#   2. Teams → Integrations → App Store Connect: add API key (Issuer ID +
+#      Key ID + .p8). The integration name below must match exactly.
+#   3. Environment variables group `cavalyra`:
+#        DEVELOPMENT_TEAM = 228M5VDU87
+#      (PROVISIONING_PROFILE_SPECIFIER is NOT needed — the profile fetched
+#       at build time is applied automatically by `xcode-project use-profiles`.)
+#
+# Signing model: fully automatic. Codemagic uses the App Store Connect API
+# to create a new Apple Distribution certificate (private key kept on
+# Codemagic's side) and a matching App Store provisioning profile for the
+# bundle id on the first build, and reuses them on subsequent builds. No
+# .p12 upload, no manual profile management.
 
 workflows:
   ios-appstore:
@@ -18,39 +22,47 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     integrations:
-      app_store_connect: Cavalyra App Store Connect   # <-- exact name of the API key integration in Codemagic (Teams → Integrations → App Store Connect)
+      app_store_connect: Cavalyra App Store Connect   # exact name in Teams → Integrations
     environment:
       groups:
-        - cavalyra                 # DEVELOPMENT_TEAM, PROVISIONING_PROFILE_SPECIFIER
-      node: 20
+        - cavalyra                 # DEVELOPMENT_TEAM
+      node: 22                     # Capacitor 8 requires Node >= 20.19 / >= 22
       xcode: latest
       vars:
         BUNDLE_ID: "de.cavalyra.app"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
-        APP_STORE_APPLE_ID: ""     # optional: numeric App Store Connect app ID
+        APP_STORE_APPLE_ID: "6753960225"
     scripts:
       - name: Install dependencies
-        script: npm ci
+        script: npm install
       - name: Build web + Capacitor sync
         script: |
           npm run build
           npx cap sync ios
-      - name: Fetch signing files from App Store Connect
+      - name: Initialize keychain
+        script: keychain initialize
+      - name: Create / fetch Apple Distribution certificate + App Store profile
+        # `--create` provisions a new Distribution certificate (Codemagic
+        # stores the private key so subsequent builds reuse it) and a
+        # matching App Store profile for $BUNDLE_ID. No .p12 required.
         script: |
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE --create
+            --type IOS_APP_STORE \
+            --create
       - name: Add certificates to keychain
         script: keychain add-certificates
-      - name: Use profiles
+      - name: Apply fetched provisioning profile to Xcode project
+        # Patches ios/App/App.xcodeproj so CODE_SIGN_STYLE=Manual,
+        # DEVELOPMENT_TEAM, and PROVISIONING_PROFILE_SPECIFIER match the
+        # profile fetched above. This overrides any stale value in
+        # ios/release.xcconfig.
         script: xcode-project use-profiles
       - name: Bump build number
         script: |
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
-      - name: Generate signing.local.xcconfig
-        script: bash scripts/setup-ios-signing.sh
-      - name: Archive
+      - name: Build IPA
         script: |
           xcode-project build-ipa \
             --workspace "$XCODE_WORKSPACE" \
