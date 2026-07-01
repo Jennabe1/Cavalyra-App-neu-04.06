@@ -1,20 +1,31 @@
 # Cavalyra – Codemagic CI/CD for iOS App Store releases
-# Docs: https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
+# Docs: https://docs.codemagic.io/yaml-code-signing/signing-ios/
 #
-# One-time Codemagic setup:
-#   1. Connect the Git repo.
-#   2. Teams → Integrations → App Store Connect: add API key (Issuer ID +
-#      Key ID + .p8). The integration name below must match exactly.
-#   3. Environment variables group `cavalyra`:
-#        DEVELOPMENT_TEAM = 228M5VDU87
-#      (PROVISIONING_PROFILE_SPECIFIER is NOT needed — the profile fetched
-#       at build time is applied automatically by `xcode-project use-profiles`.)
+# Signing model:
+#   The Apple Distribution certificate + private key are already stored in
+#   Codemagic (Team settings → Code signing identities → iOS certificates,
+#   created via "Generate certificate" or uploaded as .p12).
+#   The App Store Connect integration below is only used to fetch/create the
+#   provisioning profile for $BUNDLE_ID and to publish to TestFlight.
 #
-# Signing model: fully automatic. Codemagic uses the App Store Connect API
-# to create a new Apple Distribution certificate (private key kept on
-# Codemagic's side) and a matching App Store provisioning profile for the
-# bundle id on the first build, and reuses them on subsequent builds. No
-# .p12 upload, no manual profile management.
+#   We do NOT call `app-store-connect fetch-signing-files --create` any more:
+#   that command tries to create a *new* certificate via the ASC API and fails
+#   with "Cannot save Signing Certificates without certificate private key"
+#   when the private key is not exposed to the API. Instead we let Codemagic's
+#   built-in `environment.ios_signing` block wire everything up:
+#     1. it pulls the existing signing identity from Codemagic's vault,
+#     2. it fetches (or creates) a matching App Store profile via the ASC
+#        integration,
+#     3. it imports both into the build keychain and patches the Xcode
+#        project automatically.
+#
+# One-time Codemagic setup (already done):
+#   • Team settings → Integrations → App Store Connect: API key added,
+#     integration named "Cavalyra App Store Connect".
+#   • Team settings → Code signing identities → iOS certificates: Apple
+#     Distribution certificate generated/uploaded.
+#   • Environment variable group `cavalyra` with:
+#       DEVELOPMENT_TEAM = 228M5VDU87
 
 workflows:
   ios-appstore:
@@ -22,17 +33,24 @@ workflows:
     max_build_duration: 60
     instance_type: mac_mini_m2
     integrations:
-      app_store_connect: Codemagic
+      app_store_connect: Cavalyra App Store Connect   # must match Team → Integrations exactly
     environment:
       groups:
-        - cavalyra
-      node: 22
+        - cavalyra                 # DEVELOPMENT_TEAM
+      node: 22                     # Capacitor 8 requires Node >= 20.19 / >= 22
       xcode: latest
       vars:
         BUNDLE_ID: "de.cavalyra.app"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: "6753960225"
+      ios_signing:
+        # Uses the Apple Distribution certificate already stored in Codemagic
+        # (no --create, no private-key handling here). The App Store
+        # provisioning profile is fetched via the ASC integration above;
+        # if it does not yet exist for $BUNDLE_ID, Codemagic creates it.
+        distribution_type: app_store
+        bundle_identifier: $BUNDLE_ID
     scripts:
       - name: Install dependencies
         script: npm install
@@ -40,29 +58,14 @@ workflows:
         script: |
           npm run build
           npx cap sync ios
-      - name: Initialize keychain
-        script: keychain initialize
-      - name: Create / fetch Apple Distribution certificate + App Store profile
-        # `--create` provisions a new Distribution certificate (Codemagic
-        # stores the private key so subsequent builds reuse it) and a
-        # matching App Store profile for $BUNDLE_ID. No .p12 required.
-        script: |
-          app-store-connect fetch-signing-files "$BUNDLE_ID" \
-            --type IOS_APP_STORE \
-            --create
-      - name: Add certificates to keychain
-        script: keychain add-certificates
-      - name: Apply fetched provisioning profile to Xcode project
-        # Patches ios/App/App.xcodeproj so CODE_SIGN_STYLE=Manual,
-        # DEVELOPMENT_TEAM, and PROVISIONING_PROFILE_SPECIFIER match the
-        # profile fetched above. This overrides any stale value in
-        # ios/release.xcconfig.
-        script: xcode-project use-profiles
       - name: Bump build number
         script: |
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
       - name: Build IPA
+        # Signing is already configured by `environment.ios_signing` – no
+        # keychain/fetch-signing-files steps needed. xcode-project picks up
+        # the identity and profile that Codemagic imported for us.
         script: |
           xcode-project build-ipa \
             --workspace "$XCODE_WORKSPACE" \
