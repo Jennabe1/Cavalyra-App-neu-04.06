@@ -2009,6 +2009,22 @@ img,video,canvas{max-width:100%;height:auto}
 <script type="module" src="./src/config.ts"></script>
 <script src="cordova.js"></script>
 <script src="/billing/cavalyra-billing.js" defer></script>
+<!-- Cloud (v1 MVP wird ab v2 automatisch neutralisiert) -->
+<script src="/cloud/cavalyra-cloud.js" defer></script>
+<!-- Cloud Sync Engine v2 (Final Architecture) -->
+<script src="/cloud/cavalyra-sync-engine.js" defer></script>
+<script src="/cloud/cavalyra-sync-ui.js" defer></script>
+<style id="cav-ipad-scan-fix">
+/* iPad / iOS Fix: horizontales Scrollen im Body Scanner verhindern */
+html,body{max-width:100vw;overflow-x:hidden}
+#screen-scanner,#screen-scanner *{max-width:100%;box-sizing:border-box}
+#screen-scanner{overflow-x:hidden;padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
+#screen-scanner img,#screen-scanner video,#screen-scanner canvas{max-width:100%;height:auto}
+#screen-scanner .hero,#screen-scanner .card,#screen-scanner .grid,#screen-scanner .scan-guidance,#screen-scanner .scanner-tabs,#screen-scanner .scanner-result-actions{max-width:100%;overflow-x:hidden;flex-wrap:wrap}
+#screen-scanner pre,#screen-scanner code,#screen-scanner p,#screen-scanner li{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+#screen-scanner table{width:100%;table-layout:fixed;word-break:break-word}
+@supports(padding:max(0px)){#screen-scanner{padding-top:max(12px,env(safe-area-inset-top))}}
+</style>
 </head>
 <body>
 <div id="cavalyraSplash"><div class="splash-logo-frame"><img src="/cavalyra-horse-splash.png" alt="Cavalyra"></div></div>

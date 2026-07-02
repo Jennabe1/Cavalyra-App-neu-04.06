@@ -19,37 +19,46 @@ export type Database = {
           client_id: string | null
           created_at: string
           deleted: boolean
+          deleted_at: string | null
           horse_id: string | null
           id: string
+          image_paths: string[]
           image_url: string | null
           result: Json
           scan_date: string
           updated_at: string
           user_id: string
+          version: number
         }
         Insert: {
           client_id?: string | null
           created_at?: string
           deleted?: boolean
+          deleted_at?: string | null
           horse_id?: string | null
           id?: string
+          image_paths?: string[]
           image_url?: string | null
           result?: Json
           scan_date?: string
           updated_at?: string
           user_id: string
+          version?: number
         }
         Update: {
           client_id?: string | null
           created_at?: string
           deleted?: boolean
+          deleted_at?: string | null
           horse_id?: string | null
           id?: string
+          image_paths?: string[]
           image_url?: string | null
           result?: Json
           scan_date?: string
           updated_at?: string
           user_id?: string
+          version?: number
         }
         Relationships: [
           {
@@ -67,39 +76,120 @@ export type Database = {
           created_at: string
           data: Json
           deleted: boolean
+          deleted_at: string | null
           event_date: string | null
+          field_meta: Json
+          horse_id: string | null
           id: string
           notes: string | null
           reminder_at: string | null
           title: string | null
           updated_at: string
           user_id: string
+          version: number
         }
         Insert: {
           client_id?: string | null
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
           event_date?: string | null
+          field_meta?: Json
+          horse_id?: string | null
           id?: string
           notes?: string | null
           reminder_at?: string | null
           title?: string | null
           updated_at?: string
           user_id: string
+          version?: number
         }
         Update: {
           client_id?: string | null
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
           event_date?: string | null
+          field_meta?: Json
+          horse_id?: string | null
           id?: string
           notes?: string | null
           reminder_at?: string | null
           title?: string | null
           updated_at?: string
           user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      cloud_backup: {
+        Row: {
+          created_at: string
+          data: Json
+          key: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          data?: Json
+          key: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          data?: Json
+          key?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      course_progress: {
+        Row: {
+          completed_at: string | null
+          course_id: string
+          created_at: string
+          data: Json
+          deleted_at: string | null
+          field_meta: Json
+          horse_id: string | null
+          id: string
+          step: number
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          completed_at?: string | null
+          course_id: string
+          created_at?: string
+          data?: Json
+          deleted_at?: string | null
+          field_meta?: Json
+          horse_id?: string | null
+          id?: string
+          step?: number
+          updated_at?: string
+          user_id: string
+          version?: number
+        }
+        Update: {
+          completed_at?: string | null
+          course_id?: string
+          created_at?: string
+          data?: Json
+          deleted_at?: string | null
+          field_meta?: Json
+          horse_id?: string | null
+          id?: string
+          step?: number
+          updated_at?: string
+          user_id?: string
+          version?: number
         }
         Relationships: []
       }
@@ -110,13 +200,16 @@ export type Database = {
           created_at: string
           data: Json
           deleted: boolean
+          deleted_at: string | null
           entry_date: string | null
           entry_type: string | null
+          field_meta: Json
           horse_id: string | null
           id: string
           title: string | null
           updated_at: string
           user_id: string
+          version: number
         }
         Insert: {
           client_id?: string | null
@@ -124,13 +217,16 @@ export type Database = {
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
           entry_date?: string | null
           entry_type?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           title?: string | null
           updated_at?: string
           user_id: string
+          version?: number
         }
         Update: {
           client_id?: string | null
@@ -138,13 +234,16 @@ export type Database = {
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
           entry_date?: string | null
           entry_type?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           title?: string | null
           updated_at?: string
           user_id?: string
+          version?: number
         }
         Relationships: [
           {
@@ -156,6 +255,45 @@ export type Database = {
           },
         ]
       }
+      horse_members: {
+        Row: {
+          accepted_at: string | null
+          created_at: string
+          deleted_at: string | null
+          horse_id: string
+          id: string
+          invited_by: string | null
+          role: Database["public"]["Enums"]["horse_member_role"]
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          accepted_at?: string | null
+          created_at?: string
+          deleted_at?: string | null
+          horse_id: string
+          id?: string
+          invited_by?: string | null
+          role?: Database["public"]["Enums"]["horse_member_role"]
+          updated_at?: string
+          user_id: string
+          version?: number
+        }
+        Update: {
+          accepted_at?: string | null
+          created_at?: string
+          deleted_at?: string | null
+          horse_id?: string
+          id?: string
+          invited_by?: string | null
+          role?: Database["public"]["Enums"]["horse_member_role"]
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
       horses: {
         Row: {
           birthdate: string | null
@@ -164,12 +302,16 @@ export type Database = {
           created_at: string
           data: Json
           deleted: boolean
+          deleted_at: string | null
+          field_meta: Json
           id: string
           name: string | null
           notes: string | null
+          photo_path: string | null
           photo_url: string | null
           updated_at: string
           user_id: string
+          version: number
         }
         Insert: {
           birthdate?: string | null
@@ -178,12 +320,16 @@ export type Database = {
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
+          field_meta?: Json
           id?: string
           name?: string | null
           notes?: string | null
+          photo_path?: string | null
           photo_url?: string | null
           updated_at?: string
           user_id: string
+          version?: number
         }
         Update: {
           birthdate?: string | null
@@ -192,12 +338,16 @@ export type Database = {
           created_at?: string
           data?: Json
           deleted?: boolean
+          deleted_at?: string | null
+          field_meta?: Json
           id?: string
           name?: string | null
           notes?: string | null
+          photo_path?: string | null
           photo_url?: string | null
           updated_at?: string
           user_id?: string
+          version?: number
         }
         Relationships: []
       }
@@ -235,19 +385,127 @@ export type Database = {
         Row: {
           created_at: string
           data: Json
+          field_meta: Json
           updated_at: string
           user_id: string
+          version: number
         }
         Insert: {
           created_at?: string
           data?: Json
+          field_meta?: Json
           updated_at?: string
           user_id: string
+          version?: number
         }
         Update: {
           created_at?: string
           data?: Json
+          field_meta?: Json
           updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      rides: {
+        Row: {
+          avg_speed: number | null
+          client_id: string | null
+          created_at: string
+          data: Json
+          deleted_at: string | null
+          distance_m: number | null
+          duration_s: number | null
+          ended_at: string | null
+          horse_id: string | null
+          id: string
+          max_speed: number | null
+          notes: string | null
+          started_at: string | null
+          track: Json
+          updated_at: string
+          user_id: string
+          version: number
+        }
+        Insert: {
+          avg_speed?: number | null
+          client_id?: string | null
+          created_at?: string
+          data?: Json
+          deleted_at?: string | null
+          distance_m?: number | null
+          duration_s?: number | null
+          ended_at?: string | null
+          horse_id?: string | null
+          id?: string
+          max_speed?: number | null
+          notes?: string | null
+          started_at?: string | null
+          track?: Json
+          updated_at?: string
+          user_id: string
+          version?: number
+        }
+        Update: {
+          avg_speed?: number | null
+          client_id?: string | null
+          created_at?: string
+          data?: Json
+          deleted_at?: string | null
+          distance_m?: number | null
+          duration_s?: number | null
+          ended_at?: string | null
+          horse_id?: string | null
+          id?: string
+          max_speed?: number | null
+          notes?: string | null
+          started_at?: string | null
+          track?: Json
+          updated_at?: string
+          user_id?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      sync_conflicts: {
+        Row: {
+          chosen: string
+          client_ts: string | null
+          client_value: Json | null
+          created_at: string
+          field: string
+          id: string
+          row_id: string
+          server_ts: string | null
+          server_value: Json | null
+          table_name: string
+          user_id: string
+        }
+        Insert: {
+          chosen: string
+          client_ts?: string | null
+          client_value?: Json | null
+          created_at?: string
+          field: string
+          id?: string
+          row_id: string
+          server_ts?: string | null
+          server_value?: Json | null
+          table_name: string
+          user_id: string
+        }
+        Update: {
+          chosen?: string
+          client_ts?: string | null
+          client_value?: Json | null
+          created_at?: string
+          field?: string
+          id?: string
+          row_id?: string
+          server_ts?: string | null
+          server_value?: Json | null
+          table_name?: string
           user_id?: string
         }
         Relationships: []
@@ -257,10 +515,13 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      sync_upsert_row: {
+        Args: { p_base_version: number; p_row: Json; p_table: string }
+        Returns: Json
+      }
     }
     Enums: {
-      [_ in never]: never
+      horse_member_role: "owner" | "co_rider" | "trainer" | "vet" | "family"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -387,6 +648,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      horse_member_role: ["owner", "co_rider", "trainer", "vet", "family"],
+    },
   },
 } as const
