@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Cavalyra</title>
 <meta name="theme-color" content="#5c3540">
 <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
@@ -20,7 +20,9 @@
   --serif:Georgia,'Times New Roman',serif;--sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
   --r:18px;--shadow:0 6px 24px rgba(93,53,64,.10);
 }
-html,body{height:100%;font-family:var(--sans);background:var(--bg);color:var(--text);overflow:hidden}
+html,body{height:100%;width:100%;max-width:100vw;font-family:var(--sans);background:var(--bg);color:var(--text);overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%;text-size-adjust:100%;touch-action:manipulation}
+body{position:relative;overflow-x:hidden}
+img,video,canvas{max-width:100%;height:auto}
 .app{height:100dvh;max-width:1180px;margin:0 auto;display:grid;grid-template-columns:230px 1fr;background:var(--bg);box-shadow:0 0 60px rgba(61,32,48,.12)}
 .sidebar{background:var(--acc-dark);color:#fff;display:flex;flex-direction:column;min-height:0}
 .brand{padding:24px 18px;border-bottom:1px solid rgba(255,255,255,.1);display:flex;align-items:center;gap:12px}
@@ -5345,7 +5347,7 @@ function downloadCurrentScanPdf(){
   overlay.setAttribute("aria-modal","true");
   overlay.style.cssText = "position:fixed;inset:0;background:rgba(20,10,15,.92);z-index:100000;display:flex;flex-direction:column;";
   overlay.innerHTML = `
-    <div id="cavalyraPdfHeader" style="display:flex;gap:8px;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 10px 12px;background:#3D2030;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);flex-wrap:wrap;">
+    <div id="cavalyraPdfHeader" style="display:flex;gap:8px;justify-content:space-between;align-items:center;padding:calc(env(safe-area-inset-top,0px) + 14px) max(12px,env(safe-area-inset-right,0px)) 12px max(12px,env(safe-area-inset-left,0px));background:#3D2030;color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);flex-wrap:nowrap;min-height:calc(env(safe-area-inset-top,0px) + 60px);">
       <button id="cavalyraPdfClose" type="button" aria-label="Zurück zum Ergebnis" style="border:0;background:rgba(255,249,246,.95);color:#3D2030;border-radius:8px;padding:7px 11px;font-weight:600;font-size:13px;cursor:pointer;line-height:1;min-height:36px;">← Zurück</button>
       <strong style="color:#fff;font-size:13px;flex:1;text-align:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">Body Scan Report</strong>
       <button id="cavalyraPdfPrint" type="button" aria-label="Als PDF speichern" style="border:0;background:#A86E78;color:#fff;border-radius:8px;padding:7px 11px;font-weight:600;font-size:13px;cursor:pointer;line-height:1;min-height:36px;">🖨 PDF</button>
