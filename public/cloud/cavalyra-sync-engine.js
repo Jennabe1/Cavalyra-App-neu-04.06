@@ -137,7 +137,13 @@
     const r = await fetch(SUPABASE_URL + path, { ...opts, headers });
     if(!r.ok){
       const txt = await r.text().catch(()=>"");
-      throw new Error(`API ${r.status}: ${txt.slice(0,200)}`);
+      let body = null; try{ body = JSON.parse(txt); }catch(_){}
+      const err = new Error(`API ${r.status}: ${txt.slice(0,200)}`);
+      err.status = r.status;
+      err.body = body;
+      err.code = body?.error_code || body?.code || body?.error || null;
+      err.message_raw = body?.msg || body?.message || body?.error_description || txt;
+      throw err;
     }
     if(r.status === 204) return null;
     const ct = r.headers.get("content-type")||"";
@@ -161,6 +167,9 @@
     },
     async resetPassword(email){
       return api("/auth/v1/recover", { method:"POST", body: JSON.stringify({ email }) });
+    },
+    async resendConfirmation(email){
+      return api("/auth/v1/resend", { method:"POST", body: JSON.stringify({ type:"signup", email }) });
     }
   };
 
@@ -666,10 +675,16 @@
   // ---------- Public API ----------------------------------------------------
   const API = {
     // Auth
-    async signUp(email, pw){ const r = await AuthApi.signUp(email, pw); await onLogin(); return r; },
+    async signUp(email, pw){
+      const r = await AuthApi.signUp(email, pw);
+      if(r?.access_token){ await onLogin(); return { ok:true, confirmed:true, data:r }; }
+      // No session -> email confirmation required
+      return { ok:true, confirmed:false, data:r };
+    },
     async signIn(email, pw){ const r = await AuthApi.signIn(email, pw); await onLogin(); return r; },
     async signOut(){ await AuthApi.signOut(); await onLogout(); },
     async resetPassword(email){ return AuthApi.resetPassword(email); },
+    async resendConfirmation(email){ return AuthApi.resendConfirmation(email); },
     async deleteAccount(){
       return api("/functions/v1/delete-account", { method:"POST", body:"{}" });
     },

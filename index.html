@@ -367,7 +367,7 @@ img,video,canvas{max-width:100%;height:auto}
 /* ===== Cavalyra Body Scanner Plus ===== */
 .scan-guidance{
   display:grid;
-  grid-template-columns:repeat(3,1fr);
+  grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
   gap:10px;
   margin-top:14px;
 }
@@ -387,7 +387,7 @@ img,video,canvas{max-width:100%;height:auto}
 }
 .scan-checks{
   display:grid;
-  grid-template-columns:repeat(5,1fr);
+  grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
   gap:8px;
   margin-top:12px;
 }
@@ -833,6 +833,7 @@ img,video,canvas{max-width:100%;height:auto}
 }
 #screen-scanner .scan-guidance{
   display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
   gap:16px;
   margin-top:22px;
 }
