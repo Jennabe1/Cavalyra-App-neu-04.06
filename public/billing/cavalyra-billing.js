@@ -48,16 +48,9 @@
   }
 
   // -------------------- State-Helper --------------------
-  function isReviewMode(){
-    try { return !!(window.CAVALYRA_REVIEW_MODE); } catch(_){ return false; }
-  }
-
   function applyProState(active, source, extra){
     try {
-      if(!active && isReviewMode()){
-        console.log("[CavalyraBilling] Review Mode aktiv – Pro-Status bleibt freigeschaltet.");
-        return;
-      }
+
       if(typeof window.state === "undefined" || !window.state){
         console.warn("[CavalyraBilling] window.state noch nicht verfügbar – warte auf cavalyra:ready, um Pro="+active+" zu setzen.");
         var retry = function(){ applyProState(active, source, extra); };
@@ -235,7 +228,7 @@
   // -------------------- Public API --------------------
 
   async function checkProStatus(){
-    if(isReviewMode()) return true;
+
     if(isAndroidApp() || isIosApp()){
       if(!billing.initStarted) initNativeBilling();
       var waited = 0;
@@ -420,7 +413,7 @@
       var msg = document.getElementById("nativeBillingMessage");
       if(msg) msg.textContent = e && e.message ? e.message : "Kauf fehlgeschlagen.";
     } finally {
-      if(btn){ btn.disabled = false; btn.textContent = "3 Tage kostenlos testen"; }
+      if(btn){ btn.disabled = false; btn.textContent = "Kostenlos testen"; }
     }
     return false;
   };
@@ -455,7 +448,7 @@
     var manageHint = isIos()
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
       : "Dein Pro-Abo wird über Google Play abgerechnet und kann jederzeit im Play Store gekündigt werden.";
-    var priceLine = '<p class="small"><strong>3 Tage kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit im ' + esc(storeName) + ' kündbar.</p>';
+    var priceLine = '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit im ' + esc(storeName) + ' kündbar.</p>';
 
     var html = ''
       + '<div class="hero">'
@@ -473,7 +466,7 @@
       +   '<div class="form section">'
       +     priceLine
       +     '<div class="license-check-actions">'
-      +       '<button class="btn" id="nativeBuyProBtn" onclick="return cavalyraNativeBuyPro()">3 Tage kostenlos testen</button>'
+      +       '<button class="btn" id="nativeBuyProBtn" onclick="return cavalyraNativeBuyPro()">Kostenlos testen</button>'
       +       '<button class="btn secondary" id="nativeRestoreProBtn" onclick="return cavalyraNativeRestore()">Käufe wiederherstellen</button>'
       +     '</div>'
       +     '<div class="license-check-message" id="nativeBillingMessage">'

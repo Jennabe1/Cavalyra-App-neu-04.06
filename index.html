@@ -149,10 +149,10 @@ img,video,canvas{max-width:100%;height:auto}
   .quick{grid-template-columns:1fr 1fr}
   .scan-grid{grid-template-columns:1fr 1fr}
   .day{min-height:56px}.mini{display:none}
-  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;height:70px;padding-bottom:env(safe-area-inset-bottom);background:var(--acc-dark);z-index:50;align-items:center;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
-  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:10px;display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;height:100%;justify-content:center;font-family:var(--sans)}
+  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;min-height:64px;padding-top:8px;padding-bottom:calc(10px + env(safe-area-inset-bottom));padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);background:var(--acc-dark);z-index:50;align-items:stretch;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
+  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:11px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-height:56px;padding:6px 4px;justify-content:center;font-family:var(--sans);overflow:visible}
   .bottom-nav button.active{color:#fff}
-  .bottom-nav .ico{font-size:20px}
+  .bottom-nav .ico{font-size:22px;line-height:1}
 }
 @media(max-width:420px){
   .topbar .horse-switcher{max-width:120px}
@@ -2001,13 +2001,9 @@ img,video,canvas{max-width:100%;height:auto}
 
 </style>
 <meta name="theme-color" content="#5c3540">
-<!-- Google Play Billing Abstraction (no-op on Web). Lädt früh, damit
-     CavalyraBilling.* sofort verfügbar ist. cordova.js wird nur im Native-
-     Build (Capacitor/Android) tatsächlich aufgelöst und stellt CdvPurchase
-     bereit; im Web schlägt der Request still fehl. -->
-<!-- Zentrale Konfiguration: REVIEW_MODE. Muss vor allen anderen Scripts geladen
-     werden, damit window.CAVALYRA_REVIEW_MODE für Billing und Pro-Logik verfügbar ist. -->
-<script type="module" src="./src/config.ts"></script>
+<!-- Native In-App Billing Abstraction (Apple StoreKit / Google Play).
+     cordova.js wird nur im Native-Build (Capacitor) aufgelöst und stellt
+     CdvPurchase bereit; im Web schlägt der Request still fehl. -->
 <script src="cordova.js"></script>
 <script src="/billing/cavalyra-billing.js" defer></script>
 <!-- Cloud (v1 MVP wird ab v2 automatisch neutralisiert) -->
@@ -2607,7 +2603,6 @@ function setLicenseEmail(email){
 }
 
 function licenseStatusLabel(){
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Pro aktiv";
   const lic = normalizeLicense();
   if(lic.status === "pro") return "Pro aktiv";
   if(lic.status === "trial") return "Testphase aktiv";
@@ -2618,7 +2613,6 @@ function licenseStatusLabel(){
 }
 
 function licenseStatusClass(){
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "pro";
   const s = normalizeLicense().status;
   if(s === "pro" || s === "trial") return "pro";
   if(s === "expired" || s === "past_due" || s === "canceled") return "expired";
@@ -2626,7 +2620,6 @@ function licenseStatusClass(){
 }
 
 function licenseStatusText(){
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Review Mode: Alle Pro-Funktionen sind freigeschaltet.";
   const lic = normalizeLicense();
   if(lic.status === "pro") return "Dein Cavalyra Pro Zugang ist aktiv.";
   if(lic.status === "trial") return "Deine Testphase ist aktiv. Der Status wird über Paddle geprüft.";
@@ -2717,13 +2710,11 @@ function requireProAccess(featureName){
 }
 
 function proLock(title,text){
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "";
   return `<div class="pro-lock"><h3>${esc(title)} <span class="pro-chip">Pro</span></h3><p>${esc(text)}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">Pro-Status prüfen</button><button class="btn secondary" onclick="return openCavalyraPricing()">Pro freischalten</button></div></div>`;
 }
 
 
 function trialDaysLeft(){
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return null;
   if(state.license && state.license.status==="pro") return null;
   if(!state.license || state.license.status!=="trial") return 0;
   if(state.license.validUntil){
@@ -2738,9 +2729,6 @@ function trialDaysLeft(){
 
 
 function hasProAccess(){
-  // REVIEW_MODE: Für App-Store-/Google-Play-Reviews sind alle Pro-Funktionen
-  // freigeschaltet, ohne Zahlung oder Login. Zentrale Quelle: src/config.ts
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return true;
   const lic = normalizeLicense();
   if(lic.status === "pro") return true;
   if(lic.status === "trial"){
@@ -2753,7 +2741,6 @@ function hasProAccess(){
 
 function statusText(){
   normalizeLicense();
-  if(typeof window.CAVALYRA_REVIEW_MODE !== "undefined" && window.CAVALYRA_REVIEW_MODE) return "Pro aktiv";
   if(state.license.status==="pro") return "Pro aktiv";
   if(state.license.status==="trial" && trialDaysLeft()>0) return "Testphase aktiv";
   return "";
@@ -3059,7 +3046,7 @@ function timelineItems(){
   return items.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,12);
 }
 function proOnlyBox(title, text){
-  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">3 Tage kostenlos testen</button><button class="btn secondary" onclick="navigate('pro')">Pro freischalten</button></div></div>`;
+  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">Kostenlos testen</button><button class="btn secondary" onclick="navigate('pro')">Pro freischalten</button></div></div>`;
 }
 
 
@@ -4865,13 +4852,8 @@ function showSavedRideMap(id){
 
 
 function renderRide(){
-  if(!hasProAccess()){
-    document.getElementById("screen-ride").innerHTML = `
-      <div class="hero"><h1>Ausritt</h1><p>GPS-Ausritte für ${esc(activeHorseName())}: Kilometer, Geschwindigkeit, Zeit und Route.</p></div>
-      ${proLock("GPS-Ausritttracker freischalten","Der GPS-Ausritttracker ist Teil von Pro. Prüfe deinen Pro-Status oder schalte Pro über cavalyra.de frei.")}
-    `;
-    return;
-  }
+  // GPS-Ausreittracker ist ein kostenloses Feature.
+
   const rides=ridesForHorse().slice().reverse();
   const canSave = gpsRide?.startTime && !gpsRide.active && gpsRide.points.length>=1;
   document.getElementById("screen-ride").innerHTML=`
