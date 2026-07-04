@@ -149,8 +149,8 @@ img,video,canvas{max-width:100%;height:auto}
   .quick{grid-template-columns:1fr 1fr}
   .scan-grid{grid-template-columns:1fr 1fr}
   .day{min-height:56px}.mini{display:none}
-  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;min-height:64px;padding-top:8px;padding-bottom:calc(10px + env(safe-area-inset-bottom));padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);background:var(--acc-dark);z-index:50;align-items:stretch;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
-  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:11px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-height:56px;padding:6px 4px;justify-content:center;font-family:var(--sans);overflow:visible}
+  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;min-height:56px;padding-top:6px;padding-bottom:calc(2px + env(safe-area-inset-bottom));padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);background:var(--acc-dark);z-index:50;align-items:stretch;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
+  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:11px;line-height:1.2;display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-height:48px;padding:4px 4px 2px;justify-content:center;font-family:var(--sans);overflow:visible}
   .bottom-nav button.active{color:#fff}
   .bottom-nav .ico{font-size:22px;line-height:1}
 }
@@ -1017,6 +1017,7 @@ img,video,canvas{max-width:100%;height:auto}
   font-size:clamp(42px,9vw,64px);
   line-height:1.05;
   margin:0 0 12px;
+  color:var(--txt)!important;
 }
 #screen-courses .hero p{
   max-width:620px;
@@ -4697,7 +4698,7 @@ function _humanGeoError(err){
   return msg || "GPS-Fehler.";
 }
 async function startGpsRide(){
-  if(!requireProAccess("Der GPS-Ausritttracker")) return false;
+  // GPS-Ausreittracker ist kostenlos – keine Pro-Sperre.
   const hasNavGeo = !!navigator.geolocation;
   const hasCapGeo = !!_capGeo();
   if(!hasNavGeo && !hasCapGeo){
@@ -4781,7 +4782,7 @@ function stopGpsRide(){
 }
 
 function saveGpsRide(){
-  if(!requireProAccess("Der GPS-Ausritttracker")) return false;
+  // GPS-Ausreittracker ist kostenlos – Speichern ohne Pro-Prüfung.
   if(!gpsRide?.startTime){
     toast("Noch kein Ausritt vorhanden.");
     return false;

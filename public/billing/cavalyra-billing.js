@@ -253,14 +253,32 @@
     }
     if(!billing.initStarted) initNativeBilling();
     if(billing.initError) throw new Error(billing.initError);
+    // Warten bis Store bereit ist
     var waited = 0;
-    while(!billing.ready && waited < 8000){
+    while(!billing.ready && !billing.initError && waited < 15000){
       await new Promise(function(r){ setTimeout(r, 200); });
       waited += 200;
     }
+    if(billing.initError) throw new Error(billing.initError);
+    // Zusätzlich auf Produkt-Load warten (StoreKit lädt Produkte asynchron nach initialize)
     var product = getProduct();
+    var productWait = 0;
+    while(!product && productWait < 15000){
+      await new Promise(function(r){ setTimeout(r, 250); });
+      productWait += 250;
+      product = getProduct();
+    }
     if(!product){
-      throw new Error("Das Pro-Abo ist auf diesem Gerät noch nicht verfügbar. Bitte stelle sicher, dass du mit deinem Store-Konto angemeldet bist und das Produkt aktiv ist.");
+      var storeState = getStore();
+      var loadedIds = [];
+      try { loadedIds = ((storeState && storeState.products) || []).map(function(p){ return p.id; }); } catch(_){}
+      var pid = currentProductId();
+      throw new Error(
+        "Das Pro-Abo (" + pid + ") konnte nicht vom " +
+        (isIosApp() ? "App Store" : "Play Store") + " geladen werden. " +
+        "Bitte prüfe die Internetverbindung und dass du im Store angemeldet bist. " +
+        (loadedIds.length ? ("Geladene Produkte: " + loadedIds.join(", ")) : "Es wurden keine Produkte vom Store zurückgegeben.")
+      );
     }
     var offers = (product.offers && product.offers.length) ? product.offers : [];
     var offer = null;
