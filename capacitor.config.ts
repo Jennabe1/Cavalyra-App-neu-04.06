@@ -21,13 +21,18 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: false,
   },
   ios: {
-    contentInset: 'always',
+    // WICHTIG: 'never' verhindert doppelte Safe-Area-Berechnung.
+    // Mit 'always' inset die WKWebView den Inhalt bereits um die Safe Area,
+    // gleichzeitig würde CSS env(safe-area-inset-*) nochmals padden -> Leerraum
+    // oben (unter Dynamic Island) und unten (über Home Indicator).
+    // Mit 'never' füllt die WebView den kompletten Screen (viewport-fit=cover),
+    // und CSS env(safe-area-inset-*) übernimmt die Safe Area exakt einmal.
+    contentInset: 'never',
     limitsNavigationsToAppBoundDomains: false,
     scrollEnabled: true,
     backgroundColor: '#5c3540',
     preferredContentMode: 'mobile',
     handleApplicationNotifications: true,
-    // WebView nutzt safe-area-insets; siehe CSS env(safe-area-inset-*) in index.html.
   },
   plugins: {
     SplashScreen: {
