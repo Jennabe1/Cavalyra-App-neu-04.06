@@ -160,6 +160,10 @@ img,video,canvas{max-width:100%;height:auto}
   .bottom-nav button.active{color:#fff}
   .bottom-nav .ico{font-size:22px;line-height:1}
 }
+/* iOS-Feinjustierung: Bottom Nav ~3px näher am Home Indicator (nur iOS/WebKit) */
+@supports (-webkit-touch-callout: none) {
+  .bottom-nav{padding-bottom:max(0px, calc(env(safe-area-inset-bottom) - 3px))}
+}
 @media(max-width:420px){
   .topbar .horse-switcher{max-width:120px}
   .topbar .horse-switcher select{max-width:88px;font-size:12px}
