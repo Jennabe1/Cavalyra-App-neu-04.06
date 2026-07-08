@@ -468,6 +468,19 @@
       : "Dein Pro-Abo wird über Google Play abgerechnet und kann jederzeit im Play Store gekündigt werden.";
     var priceLine = '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit im ' + esc(storeName) + ' kündbar.</p>';
 
+    var subscriptionDetails = ''
+      + '<div class="card" style="margin-bottom:12px;">'
+      +   '<h3 style="margin:0 0 8px 0;font-size:20px;">Cavalyra Pro</h3>'
+      +   '<p class="small" style="margin:0 0 6px 0;"><strong>Duration:</strong> 1 Month</p>'
+      +   '<p class="small" style="margin:0;"><strong>Price:</strong> ' + esc(priceText) + '</p>'
+      + '</div>';
+
+    var legalLinks = ''
+      + '<div class="legal-link-list" style="margin:14px 0;">'
+      +   '<a href="https://cavalyra.de/datenschutz" target="_blank" rel="noopener">Privacy Policy</a>'
+      +   '<a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noopener">Terms of Use (Apple Standard EULA)</a>'
+      + '</div>';
+
     var html = ''
       + '<div class="hero">'
       +   '<h1>Cavalyra Pro</h1>'
@@ -482,7 +495,9 @@
       +     '<div class="license-status-pill ' + esc(statusClass) + '">' + esc(statusLabel) + '</div>'
       +   '</div>'
       +   '<div class="form section">'
+      +     subscriptionDetails
       +     priceLine
+      +     legalLinks
       +     '<div class="license-check-actions">'
       +       '<button class="btn" id="nativeBuyProBtn" onclick="return cavalyraNativeBuyPro()">Kostenlos testen</button>'
       +       '<button class="btn secondary" id="nativeRestoreProBtn" onclick="return cavalyraNativeRestore()">Käufe wiederherstellen</button>'
