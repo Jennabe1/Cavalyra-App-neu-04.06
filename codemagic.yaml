@@ -6,12 +6,12 @@ workflows:
     max_build_duration: 60
 
     environment:
-  groups:
-    - cavalyra
-  node: 22
-  vars:
-    PACKAGE_NAME: "de.cavalyra.app"
-    ANDROID_VERSION_CODE: "11"
+      groups:
+        - cavalyra
+      node: 22
+      vars:
+        PACKAGE_NAME: "de.cavalyra.app"
+        ANDROID_VERSION_CODE: "11"
 
     scripts:
       - name: Install dependencies
@@ -19,6 +19,7 @@ workflows:
 
       - name: Build web + Capacitor sync
         script: |
+          npm install
           npm run build
           npx cap sync android
 
@@ -31,11 +32,7 @@ workflows:
       - name: Rename APK
         script: |
           mkdir -p $CM_BUILD_DIR/apk
-          for f in android/app/build/outputs/apk/release/*.apk; do
-            [ -e "$f" ] || continue
-            base=$(basename "$f")
-            cp "$f" "$CM_BUILD_DIR/apk/cavalyra-${base%.apk}-v${ANDROID_VERSION_CODE:-$(date +%s)}.apk"
-          done
+          cp app/build/outputs/apk/release/*.apk $CM_BUILD_DIR/apk/ || true
 
     artifacts:
       - android/app/build/outputs/apk/release/*.apk
@@ -77,14 +74,11 @@ workflows:
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
 
-      - name: Assign provisioning profile to target and generate ExportOptions
+      - name: Assign provisioning profile
         script: |
           xcode-project use-profiles \
             --project "$XCODE_PROJECT" \
             --export-options-plist /tmp/export_options.plist
-
-          echo "--- Generated /tmp/export_options.plist ---"
-          cat /tmp/export_options.plist
 
       - name: Build IPA
         script: |
