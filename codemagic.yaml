@@ -9,7 +9,6 @@ workflows:
   groups:
     - cavalyra
   node: 22
-  java: 21
   vars:
     PACKAGE_NAME: "de.cavalyra.app"
     ANDROID_VERSION_CODE: "11"
