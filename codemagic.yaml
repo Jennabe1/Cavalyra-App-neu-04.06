@@ -1,12 +1,14 @@
+# Cavalyra – Codemagic CI/CD for iOS App Store releases
+# Docs: https://docs.codemagic.io/yaml-code-signing/signing-ios/
+#        https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
+
 workflows:
   ios-appstore:
     name: iOS App Store Release
     max_build_duration: 60
     instance_type: mac_mini_m2
-
     integrations:
       app_store_connect: Codemagic
-
     environment:
       groups:
         - cavalyra
@@ -17,31 +19,33 @@ workflows:
         XCODE_PROJECT: "ios/App/App.xcodeproj"
         XCODE_SCHEME: "App"
         APP_STORE_APPLE_ID: "6753960225"
-
       ios_signing:
         distribution_type: app_store
         bundle_identifier: $BUNDLE_ID
-
     scripts:
       - name: Install dependencies
         script: npm install
-
       - name: Build web + Capacitor sync
         script: |
           npm run build
           npx cap sync ios
-
       - name: Bump build number
         script: |
           cd ios/App
           agvtool new-version -all $(($BUILD_NUMBER + 1))
-
-      - name: Assign provisioning profile
+      - name: Assign provisioning profile to target and generate ExportOptions
+        # `xcode-project use-profiles` patches the Xcode project with the
+        # correct DEVELOPMENT_TEAM / PROVISIONING_PROFILE_SPECIFIER / CODE_SIGN_IDENTITY
+        # from the profiles that ios_signing downloaded, AND writes a fully
+        # resolved export options plist to /tmp/export_options.plist that we
+        # use for the IPA export (avoids the $(PROVISIONING_PROFILE_SPECIFIER)
+        # placeholder never being substituted).
         script: |
           xcode-project use-profiles \
             --project "$XCODE_PROJECT" \
             --export-options-plist /tmp/export_options.plist
-
+          echo "--- Generated /tmp/export_options.plist ---"
+          cat /tmp/export_options.plist
       - name: Build IPA
         script: |
           xcode-project build-ipa \
@@ -49,53 +53,13 @@ workflows:
             --scheme "$XCODE_SCHEME" \
             --config Release \
             --export-options-plist /tmp/export_options.plist
-
     artifacts:
       - build/ios/ipa/*.ipa
       - /tmp/xcodebuild_logs/*.log
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app.dSYM.zip
-
     publishing:
       app_store_connect:
         auth: integration
         submit_to_testflight: true
         beta_groups:
           - Internal Testers
-
-  android-apk:
-    name: Android APK Release
-    max_build_duration: 60
-    instance_type: mac_mini_m2
-
-    environment:
-      node: 22
-      java: 21
-      
-      android_signing:
-        - Cavalyra
-
-    scripts:
-      - name: Set Android SDK location
-        script: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/android/local.properties"
-
-      - name: Install npm dependencies
-        script: |
-          npm install
-
-      - name: Build web app
-        script: |
-          npm run build
-
-      - name: Sync Capacitor
-        script: |
-          npx cap sync android
-
-      - name: Build Android Release APK
-        script: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease
-
-    artifacts:
-      - android/app/build/outputs/**/*.apk
