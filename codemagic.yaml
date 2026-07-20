@@ -6,10 +6,15 @@ workflows:
     max_build_duration: 60
 
     environment:
+      android_signing:
+        - Cavalyra
+
       groups:
         - cavalyra
+
       java: 21
       node: 22
+
       vars:
         PACKAGE_NAME: "de.cavalyra.app"
         ANDROID_VERSION_CODE: "11"
@@ -52,6 +57,7 @@ workflows:
     environment:
       groups:
         - cavalyra
+
       node: 22
       xcode: latest
 
