@@ -69,7 +69,7 @@ workflows:
 
     environment:
       node: 22
-      java: 17
+      java: 21
 
     scripts:
       - name: Set Android SDK location
