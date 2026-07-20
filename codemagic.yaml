@@ -70,6 +70,9 @@ workflows:
     environment:
       node: 22
       java: 21
+      
+      android_signing:
+        - Cavalyra
 
     scripts:
       - name: Set Android SDK location
