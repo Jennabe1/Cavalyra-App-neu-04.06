@@ -1,8 +1,52 @@
-# Cavalyra – Codemagic CI/CD for iOS App Store releases
-# Docs: https://docs.codemagic.io/yaml-code-signing/signing-ios/
-#        https://docs.codemagic.io/yaml-quick-start/building-a-native-ios-app/
+# Cavalyra – Codemagic CI/CD
+# Builds:
+#   • android-apk  -> signierte Release-APK (Sideload / eigene Verteilung)
+#   • ios-appstore -> TestFlight / App Store Release
 
 workflows:
+  android-apk:
+    name: Android APK Release
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      groups:
+        - cavalyra
+      node: 22
+      vars:
+        PACKAGE_NAME: "de.cavalyra.app"
+        # Optional: setzen, falls der Release-Build automatisch hochgezählt werden soll.
+        # CM_BUILD_NUMBER wird von Codemagic bereitgestellt.
+        ANDROID_VERSION_CODE: "11"
+    scripts:
+      - name: Install dependencies
+        script: npm install
+      - name: Build web + Capacitor sync
+        script: |
+          npm run build
+          npx cap sync android
+      - name: Build signed Release APK
+        # Voraussetzung: In Codemagic UI ein Release-Keystore hochladen ODER
+        # folgende Env-Variablen in der Gruppe "cavalyra" setzen:
+        #   CM_KEYSTORE         (base64 der .jks/.keystore Datei)
+        #   CM_KEYSTORE_PASSWORD
+        #   CM_KEY_ALIAS
+        #   CM_KEY_PASSWORD
+        # Codemagic schreibt das entschlüsselte Keystore nach CM_KEYSTORE_PATH.
+        script: |
+          cd android
+          ./gradlew assembleRelease
+      - name: Rename APK
+        script: |
+          mkdir -p $CM_BUILD_DIR/apk
+          for f in android/app/build/outputs/apk/release/*.apk; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f")
+            cp "$f" "$CM_BUILD_DIR/apk/cavalyra-${base%.apk}-v${ANDROID_VERSION_CODE:-$(date +%s)}.apk"
+          done
+    artifacts:
+      - android/app/build/outputs/apk/release/*.apk
+      - $CM_BUILD_DIR/apk/*.apk
+
   ios-appstore:
     name: iOS App Store Release
     max_build_duration: 60

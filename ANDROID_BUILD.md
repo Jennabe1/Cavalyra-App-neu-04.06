@@ -37,22 +37,46 @@ App-Identität in `capacitor.config.ts` und `android/app/build.gradle`:
 
 ## 3. Signierte Release-APK bauen
 
+### Lokal (Android Studio)
+
 1. Signing-Key erstellen (einmalig):
    ```bash
    keytool -genkey -v -keystore cavalyra-release.keystore \
      -alias cavalyra -keyalg RSA -keysize 2048 -validity 10000
    ```
-2. `android/key.properties` anlegen:
+2. Umgebungsvariablen setzen (oder in `android/key.properties` pflegen und
+   `build.gradle` entsprechend anpassen):
+   ```bash
+   export KEYSTORE_PASSWORD=…
+   export KEY_PASSWORD=…
+   export KEY_ALIAS=cavalyra
+   # Kopiere das Keystore in android/app/cavalyra.keystore
    ```
-   storePassword=…
-   keyPassword=…
-   keyAlias=cavalyra
-   storeFile=/absoluter/pfad/cavalyra-release.keystore
-   ```
-3. Signing in `android/app/build.gradle` konfigurieren (siehe Vorversion
-   dieses Dokuments in der Git-Historie).
-4. In Android Studio: **Build → Generate Signed APK → release**.
+3. In Android Studio: **Build → Generate Signed APK → release**.
    Ergebnis: `android/app/build/outputs/apk/release/app-release.apk`.
+
+### Codemagic (CI/CD)
+
+Die `codemagic.yaml` enthält den Workflow `android-apk`:
+
+```bash
+codemagic.yaml
+```
+
+Erforderliche Konfiguration in Codemagic:
+
+1. **Environment-Gruppe** `cavalyra` anlegen mit:
+   - `CM_KEYSTORE` – base64-kodierte Keystore-Datei
+   - `CM_KEYSTORE_PASSWORD`
+   - `CM_KEY_ALIAS`
+   - `CM_KEY_PASSWORD`
+2. Alternativ: Keystore in **Teams → Code signing → Android keystores**
+   hochladen und in `codemagic.yaml` unter `environment.android_signing`
+   referenzieren.
+3. Workflow `android-apk` in Codemagic ausführen.
+   Ergebnis: signierte APK unter `android/app/build/outputs/apk/release/`. Die
+   Rename-Stage kopiert zusätzlich eine versionsbenannte APK in
+   `$CM_BUILD_DIR/apk/`.
 
 ## 4. Verteilung
 
