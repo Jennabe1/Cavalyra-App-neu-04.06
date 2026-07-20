@@ -2035,6 +2035,40 @@ img,video,canvas{max-width:100%;height:auto}
 <!-- Cloud Sync Engine v2 (Final Architecture) -->
 <script src="/cloud/cavalyra-sync-engine.js" defer></script>
 <script src="/cloud/cavalyra-sync-ui.js" defer></script>
+<!-- Android Sideload Auto-Updater (nur aktiv im nativen Android-Build) -->
+<script src="/updater/cavalyra-android-updater.js" defer></script>
+<script>
+/* First-launch Hinweis (nur nativer Build): lokale Datenspeicherung erklären. */
+(function(){
+  var KEY = "cavalyra:onboarding:v1";
+  function isNative(){ try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch(_){ return false; } }
+  function show(){
+    if(document.getElementById("cavalyraOnboardingModal")) return;
+    var wrap = document.createElement("div");
+    wrap.id = "cavalyraOnboardingModal";
+    wrap.style.cssText = "position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;font-family:inherit;";
+    wrap.innerHTML = ''
+      + '<div style="max-width:420px;width:100%;background:#f7ecd6;color:#3a1f26;border-radius:16px;padding:22px 20px;box-shadow:0 20px 60px rgba(0,0,0,.4);">'
+      +   '<h2 style="margin:0 0 10px 0;font-size:20px;">Deine Daten bleiben auf deinem Gerät</h2>'
+      +   '<p style="margin:0 0 12px 0;font-size:14px;line-height:1.5;">Standardmäßig werden alle Pferdedaten lokal auf deinem Gerät gespeichert.</p>'
+      +   '<p style="margin:0 0 18px 0;font-size:14px;line-height:1.5;">Unter <b>Profil → Datenbank</b> kannst du jederzeit kostenlos die Cloud-Sicherung aktivieren, damit deine Daten bei einem Gerätewechsel oder einer Neuinstallation erhalten bleiben.</p>'
+      +   '<button id="cavOnboardOk" style="width:100%;border:0;border-radius:12px;padding:12px;background:#5c3540;color:#fff;font-weight:600;cursor:pointer;">Verstanden</button>'
+      + '</div>';
+    document.body.appendChild(wrap);
+    document.getElementById("cavOnboardOk").onclick = function(){
+      try { localStorage.setItem(KEY, "1"); } catch(_){}
+      wrap.remove();
+    };
+  }
+  function check(){
+    try { if(localStorage.getItem(KEY)) return; } catch(_){ return; }
+    if(!isNative()) return;
+    setTimeout(show, 1200);
+  }
+  if(document.readyState === "complete" || document.readyState === "interactive") setTimeout(check, 500);
+  else window.addEventListener("DOMContentLoaded", function(){ setTimeout(check, 500); });
+})();
+</script>
 <style id="cav-ipad-scan-fix">
 /* iPad / iOS Fix: horizontales Scrollen im Body Scanner verhindern */
 html,body{max-width:100vw;overflow-x:hidden}
@@ -2538,7 +2572,8 @@ function seedHorsebook(){return [
 const CAVALYRA_LICENSE_CONFIG = {
   pricingUrl: "https://cavalyra.de/#preise",
   customerPortalUrl: "https://customer-portal.paddle.com/cpl_01ksj34k26v4xebfvgtnb3xbf9",
-  checkEndpoint: "/.netlify/functions/check-license"
+  checkEndpoint: "https://cavalyra.de/.netlify/functions/check-license",
+  offlineGraceDays: 14
 };
 const CAVALYRA_LICENSE_STORAGE_KEYS = ["cavalyra_license", "cavalyra_license_v1", "cavalyra_pro_license", "cavalyra_pro_access"];
 
@@ -2761,6 +2796,53 @@ function hasProAccess(){
   }
   return false;
 }
+
+/* Silent license refresh: läuft beim Start und bei App-Resume.
+   Fehlschläge (kein Internet, Server down) verändern den Status NICHT.
+   Erst wenn der letzte erfolgreiche Check älter als offlineGraceDays ist
+   UND ein neuer Check den Status auf free/expired setzt, wird Pro entzogen. */
+async function refreshLicenseSilently(){
+  try{
+    const email = licenseEmail();
+    if(!email || !email.includes("@")) return;
+    const url = CAVALYRA_LICENSE_CONFIG.checkEndpoint + "?email=" + encodeURIComponent(email);
+    const res = await fetch(url, { method:"GET", headers:{ "Accept":"application/json" }, cache:"no-store" });
+    if(!res.ok) return;
+    const data = await res.json().catch(()=>null);
+    if(!data || !data.ok) return;
+    const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
+    const prev = normalizeLicense();
+    const prevWasPro = prev.status === "pro" || prev.status === "trial";
+    const nowPro = newStatus === "pro" || newStatus === "trial";
+    state.license = Object.assign({}, prev, {
+      status: newStatus,
+      pro: nowPro,
+      email: email,
+      source: "paddle-silent",
+      checkedAt: new Date().toISOString(),
+      validUntil: data.validUntil || prev.validUntil || "",
+      subscriptionId: data.subscriptionId || prev.subscriptionId || "",
+      customerId: data.customerId || prev.customerId || ""
+    });
+    saveLicense(true);
+    if(prevWasPro !== nowPro){ try{ render(); }catch(_){} }
+  }catch(_){ /* offline / server down: still keep last known good status */ }
+}
+
+function initLicenseAutoCheck(){
+  try{
+    setTimeout(refreshLicenseSilently, 3000);
+    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if(App && App.addListener){ App.addListener("resume", refreshLicenseSilently); }
+    window.addEventListener("focus", function(){
+      const lic = state.license || {};
+      const last = lic.checkedAt ? new Date(lic.checkedAt).getTime() : 0;
+      if(Date.now() - last > 6*60*60*1000) refreshLicenseSilently();
+    });
+  }catch(_){}
+}
+if(document.readyState === "complete" || document.readyState === "interactive") setTimeout(initLicenseAutoCheck, 0);
+else window.addEventListener("DOMContentLoaded", initLicenseAutoCheck);
 
 
 function statusText(){
