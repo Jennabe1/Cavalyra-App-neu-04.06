@@ -1,4 +1,3 @@
-# TEST 2026-07-20
 # Cavalyra – Codemagic CI/CD
 # Builds:
 #   • android-apk  -> signierte Release-APK (Sideload / eigene Verteilung)
