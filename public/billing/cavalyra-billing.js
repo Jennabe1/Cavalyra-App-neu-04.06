@@ -32,7 +32,17 @@
   var PRODUCT_ID_IOS = "de.cavalyra.app.pro.monthly";
 
   // Paddle Web-Checkout (Android)
-  var PADDLE_CHECKOUT_URL = "https://cavalyra.de/#preise";
+  // Direkter Paddle-Checkout ohne Umweg über die Website.
+  // Wenn PADDLE_CLIENT_TOKEN gesetzt ist, öffnet die App Paddle.Checkout
+  // direkt in einem eingebetteten Overlay. Ansonsten wird als Fallback
+  // die bestehende Paddle-Preisseite genutzt.
+  // Token wird ausschließlich aus /config/cavalyra-config.js gelesen.
+  // Er darf NICHT fest im Quellcode hinterlegt sein.
+  function getPaddleToken(){ return (window.CAVALYRA_PADDLE_CLIENT_TOKEN || "").trim(); }
+  function getPaddleEnv(){ return (window.CAVALYRA_PADDLE_ENV || "production").trim(); }
+  var PADDLE_MONTHLY_PRICE_ID = "pri_01ksnccs23fwwm0qctdydb93xz";
+  // Grobe Form-Prüfung: Paddle-Client-Tokens beginnen mit "live_" oder "test_".
+  function isValidPaddleToken(t){ return /^(live|test)_[A-Za-z0-9_\-]{10,}$/.test(t || ""); }
   var LICENSE_CHECK_URL   = "https://cavalyra.de/.netlify/functions/check-license";
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
 
@@ -214,19 +224,86 @@
     }
   }
 
+  // Paddle.js dynamisch laden und einmalig initialisieren
+  var paddleJsPromise = null;
+  function loadPaddleJs(){
+    if(paddleJsPromise) return paddleJsPromise;
+    paddleJsPromise = new Promise(function(resolve, reject){
+      if(window.Paddle) return resolve(window.Paddle);
+      var s = document.createElement("script");
+      s.src = "https://cdn.paddle.com/paddle/v2/paddle.js";
+      s.async = true;
+      s.onload = function(){
+        try {
+          var token = getPaddleToken();
+          if(getPaddleEnv() === "sandbox" && window.Paddle && window.Paddle.Environment) {
+            window.Paddle.Environment.set("sandbox");
+          }
+          if(window.Paddle && window.Paddle.Initialize){
+            window.Paddle.Initialize({ token: token });
+          }
+          resolve(window.Paddle);
+        } catch(e){ reject(e); }
+      };
+      s.onerror = function(){
+        paddleJsPromise = null;
+        reject(new Error("Paddle-Checkout konnte nicht geladen werden. Bitte prüfe deine Internetverbindung und versuche es erneut."));
+      };
+      document.head.appendChild(s);
+    });
+    return paddleJsPromise;
+  }
+
   async function openPaddleCheckout(){
-    var email = getKnownEmail();
-    var url = PADDLE_CHECKOUT_URL;
-    if(email) url += (url.indexOf("?") === -1 ? "?" : "&") + "customer_email=" + encodeURIComponent(email);
-    try {
-      if(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser){
-        await window.Capacitor.Plugins.Browser.open({ url: url, presentationStyle: "fullscreen" });
-      } else {
-        window.open(url, "_blank", "noopener");
-      }
-    } catch(_){
-      window.open(url, "_blank", "noopener");
+    var token = getPaddleToken();
+    if(!token){
+      throw new Error("Paddle ist derzeit nicht konfiguriert. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
     }
+    if(!isValidPaddleToken(token)){
+      throw new Error("Der hinterlegte Paddle-Zugang ist ungültig. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
+    }
+    var email = getKnownEmail();
+    await loadPaddleJs();
+    if(!(window.Paddle && window.Paddle.Checkout && window.Paddle.Checkout.open)){
+      throw new Error("Paddle-Checkout konnte nicht gestartet werden. Bitte versuche es später erneut.");
+    }
+    return await new Promise(function(resolve, reject){
+      var settled = false;
+      function done(msg){
+        if(settled) return; settled = true;
+        try { if(window.toast && msg) window.toast(msg); } catch(_){}
+        resolve();
+      }
+      var opts = {
+        items: [{ priceId: PADDLE_MONTHLY_PRICE_ID, quantity: 1 }],
+        settings: {
+          displayMode: "overlay",
+          theme: "light",
+          locale: "de",
+          allowLogout: false
+        },
+        successCallback: function(){
+          refreshLicenseFromServer(email).catch(function(){});
+          [1500, 4000, 8000, 15000].forEach(function(ms){
+            setTimeout(function(){ refreshLicenseFromServer(email).catch(function(){}); }, ms);
+          });
+          done("Kauf abgeschlossen – Pro wird gleich freigeschaltet.");
+        },
+        closeCallback: function(){
+          // Nutzer hat den Checkout geschlossen bzw. abgebrochen.
+          // Sicherheitshalber trotzdem einmal Lizenzstatus prüfen.
+          refreshLicenseFromServer(email).catch(function(){});
+          done("Checkout geschlossen. Kein Kauf abgeschlossen.");
+        }
+      };
+      if(email) opts.customer = { email: email };
+      try {
+        window.Paddle.Checkout.open(opts);
+      } catch(e){
+        settled = true;
+        reject(new Error("Paddle-Checkout konnte nicht geöffnet werden: " + (e && e.message ? e.message : "Unbekannter Fehler")));
+      }
+    });
   }
 
   // Auto-Refresh nach Rückkehr in die App (Paddle-Kauf beendet)
@@ -500,7 +577,7 @@
     var storeName = isIos() ? "App Store" : "Paddle";
     var manageHint = isIos()
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
-      : "Dein Pro-Abo wird sicher über Paddle abgerechnet und kann jederzeit im Kundenportal auf cavalyra.de gekündigt werden.";
+      : "Dein Pro-Abo wird sicher über Paddle abgerechnet und kann jederzeit über das Paddle-Kundenportal verwaltet oder gekündigt werden.";
     var priceLine = '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit über ' + esc(storeName) + ' kündbar.</p>';
 
     var subscriptionDetails = ''
@@ -510,15 +587,14 @@
       +   '<p class="small" style="margin:0;"><strong>Preis:</strong> ' + esc(priceText) + '</p>'
       + '</div>';
 
+    // Legal-Links (Datenschutz/AGB) sind bereits im Profil-Bereich vorhanden.
+    // Auf iOS bleibt nur die Apple-Compliance-Zeile (Privacy Policy + Apple EULA).
     var legalLinks = isIos()
       ? ('<div class="legal-link-list" style="margin:14px 0;">'
           + '<a href="https://cavalyra.de/datenschutz" target="_blank" rel="noopener">Privacy Policy</a>'
           + '<a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noopener">Terms of Use (Apple Standard EULA)</a>'
           + '</div>')
-      : ('<div class="legal-link-list" style="margin:14px 0;">'
-          + '<a href="https://cavalyra.de/datenschutz" target="_blank" rel="noopener">Datenschutz</a>'
-          + '<a href="https://cavalyra.de/agb" target="_blank" rel="noopener">AGB</a>'
-          + '</div>');
+      : '';
 
     var manageBtn = isAndroid()
       ? '<button class="btn secondary" onclick="return openCavalyraCustomerPortal()">Abo verwalten</button>'

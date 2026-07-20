@@ -3,7 +3,7 @@
 > Ziel: eine langfristig wartbare Offline-First-Architektur mit optionaler
 > Cloud-Synchronisation über Supabase (Lovable Cloud). Alle Änderungen sind
 > **additiv** – die bestehende App-Logik (GPS-Tracker, Kalender, Dashboard,
-> Pferdebuch, Body Scanner, PDF-Erstellung, Review Mode, Billing, Capacitor)
+> Pferdebuch, Body Scanner, PDF-Erstellung, Billing, Capacitor)
 > bleibt funktional unverändert.
 
 ---

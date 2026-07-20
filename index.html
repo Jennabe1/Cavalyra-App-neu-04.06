@@ -150,19 +150,22 @@ img,video,canvas{max-width:100%;height:auto}
   .topbar .page-title{font-size:18px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .topbar-right{flex-shrink:0;gap:6px;flex-wrap:nowrap;overflow:hidden}
   .topbar .status-pill{display:none}
-  .content{padding:16px 14px calc(64px + env(safe-area-inset-bottom))}
+  .content{padding:16px 14px calc(84px + env(safe-area-inset-bottom))}
   .grid-2,.grid-3,.dash-top,.calendar-wrap,.course-list,.pricing{grid-template-columns:1fr}
   .quick{grid-template-columns:1fr 1fr}
   .scan-grid{grid-template-columns:1fr 1fr}
   .day{min-height:56px}.mini{display:none}
-  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;padding-top:6px;padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);background:var(--acc-dark);z-index:50;align-items:flex-end;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
-  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:10px;line-height:1.1;display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;padding:0 4px;justify-content:flex-end;font-family:var(--sans);overflow:visible}
+  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;padding:10px 4px calc(10px + env(safe-area-inset-bottom));padding-left:max(4px,env(safe-area-inset-left));padding-right:max(4px,env(safe-area-inset-right));background:var(--acc-dark);z-index:50;align-items:center;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1);min-height:64px}
+  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.6);font-size:11px;line-height:1.15;display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;padding:6px 4px;justify-content:center;font-family:var(--sans);overflow:visible}
   .bottom-nav button.active{color:#fff}
-  .bottom-nav .ico{font-size:22px;line-height:1}
+  .bottom-nav .ico{font-size:24px;line-height:1}
+  /* Cavalyra-Rosa auch unter der Bottom-Nav (Safe-Area-/Systemleisten-Bereich) */
+  html,body{background:var(--acc-dark)}
+  .main,.content{background:var(--bg)}
 }
 /* iOS-Feinjustierung: Bottom Nav ~3px näher am Home Indicator (nur iOS/WebKit) */
 @supports (-webkit-touch-callout: none) {
-  .bottom-nav{padding-bottom:max(0px, calc(env(safe-area-inset-bottom) - 3px))}
+  .bottom-nav{padding-bottom:max(6px, calc(env(safe-area-inset-bottom) - 3px))}
 }
 @media(max-width:420px){
   .topbar .horse-switcher{max-width:120px}
@@ -1307,7 +1310,7 @@ img,video,canvas{max-width:100%;height:auto}
 
 /* ===== Cavalyra App Full-Width Polish (mobile) ===== */
 @media(max-width:850px){
-  .content{padding:14px 8px calc(64px + env(safe-area-inset-bottom))!important}
+  .content{padding:14px 8px calc(84px + env(safe-area-inset-bottom))!important}
 }
 @media(max-width:520px){
   #screen-courses .hero{padding:18px 10px 10px!important}
@@ -2027,6 +2030,21 @@ img,video,canvas{max-width:100%;height:auto}
         document.head.appendChild(s);
       }
     } catch(e) { /* im Web still fehlschlagen */ }
+  })();
+</script>
+<script>
+  // Paddle-Konfiguration aus Vite-Umgebungsvariablen (Build-Zeit-Ersetzung).
+  // Werte werden aus .env / .env.local bzw. den CI-Secrets geladen:
+  //   VITE_PADDLE_CLIENT_TOKEN=live_xxx | test_xxx
+  //   VITE_PADDLE_ENV=production | sandbox
+  (function(){
+    var token = "%VITE_PADDLE_CLIENT_TOKEN%";
+    var env   = "%VITE_PADDLE_ENV%";
+    // Nicht ersetzte Platzhalter (z.B. wenn Datei nicht durch Vite lief) neutralisieren:
+    if(!token || token.indexOf("%VITE_") === 0) token = "";
+    if(!env   || env.indexOf("%VITE_")   === 0) env   = "production";
+    window.CAVALYRA_PADDLE_CLIENT_TOKEN = token;
+    window.CAVALYRA_PADDLE_ENV = env;
   })();
 </script>
 <script src="/billing/cavalyra-billing.js" defer></script>
