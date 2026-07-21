@@ -47,8 +47,50 @@
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
 
   // -------------------- State-Helper --------------------
+  var BILLING_DEBUG_KEY = "cavalyra:billing:debug";
+  function safeDebugValue(value, depth){
+    if(depth == null) depth = 0;
+    if(depth > 4) return "[max-depth]";
+    if(value == null) return value;
+    var t = typeof value;
+    if(t === "string" || t === "number" || t === "boolean") return value;
+    if(t === "function") return "[function]";
+    if(Array.isArray(value)) return value.slice(0, 20).map(function(v){ return safeDebugValue(v, depth + 1); });
+    if(t === "object"){
+      var out = {};
+      Object.keys(value).slice(0, 40).forEach(function(k){
+        if(/token|secret|password|authorization|receipt/i.test(k)) out[k] = "[redacted]";
+        else out[k] = safeDebugValue(value[k], depth + 1);
+      });
+      return out;
+    }
+    return String(value);
+  }
+  function licenseSnapshot(){
+    try {
+      var l = (window.state && window.state.license) || {};
+      return { status:l.status || "", pro:!!l.pro, source:l.source || "", checkedAt:l.checkedAt || "", productId:l.productId || "" };
+    } catch(_){ return {}; }
+  }
+  function debug(event, data){
+    try {
+      var entry = { ts:new Date().toISOString(), event:event, data:safeDebugValue(data || {}) };
+      console.log("[CavalyraBilling][Debug] " + event, entry.data);
+      var list = [];
+      try { list = JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ list = []; }
+      list.push(entry);
+      if(list.length > 250) list = list.slice(list.length - 250);
+      try { localStorage.setItem(BILLING_DEBUG_KEY, JSON.stringify(list)); } catch(_){ }
+    } catch(_){ }
+  }
+
   function applyProState(active, source, extra){
     try {
+      debug("applyProState:called", { active:!!active, source:source || "", extra:extra || {}, before:licenseSnapshot() });
+      if(active && source === "app_store" && !(extra && extra.entitlementConfirmed === true)){
+        debug("license-change:blocked", { reason:"app_store_requires_confirmed_entitlement", active:!!active, source:source || "", extra:extra || {}, before:licenseSnapshot() });
+        return;
+      }
       if(typeof window.state === "undefined" || !window.state){
         console.warn("[CavalyraBilling] window.state noch nicht verfügbar – warte auf cavalyra:ready.");
         var retry = function(){ applyProState(active, source, extra); };
@@ -78,6 +120,7 @@
       window.state.license.checkedAt = new Date().toISOString();
       if(typeof window.saveLicense === "function") window.saveLicense(true);
       if(typeof window.render === "function") window.render();
+      debug("license-change:applied", { active:!!active, source:source || "", extra:extra || {}, after:licenseSnapshot() });
     } catch(e){ console.error("[CavalyraBilling] applyProState fehlgeschlagen", e); }
   }
 
@@ -90,7 +133,7 @@
   function markIosApproved(){
     iosBilling.lastApprovedAt = Date.now();
     iosBilling.receiptsSeen = true;
-    try { console.log("[CavalyraBilling][iOS] purchase approved / verified"); } catch(_){}
+    debug("storekit:purchase-approved", { productId: PRODUCT_ID_IOS });
   }
 
   function initIosBilling(){
@@ -113,29 +156,40 @@
         .approved(function(t){
           try {
             markIosApproved();
-            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
-            if(t.finish) t.finish();
-          } catch(_){ }
-          // Nicht sofort syncIosStore aufrufen – Receipt ist evtl. noch nicht verfügbar
-          // und würde den gerade freigeschalteten Pro-Status wieder demoten.
-          setTimeout(syncIosStore, 4000);
+            debug("storekit:purchase-approved-callback", { transaction:t, entitlement:hasValidatedIosEntitlement(t) });
+            if(t && typeof t.verify === "function") t.verify();
+            else syncIosStore();
+          } catch(e){ debug("storekit:approved-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
         .verified(function(r){
-          try{ if(r.finish) r.finish(); }catch(_){ }
-          markIosApproved();
-          applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
-          setTimeout(syncIosStore, 4000);
+          try{
+            debug("storekit:purchase-verified-callback", { receipt:r, entitlement:hasValidatedIosEntitlement(r) });
+            if(hasValidatedIosEntitlement(r)){
+              markIosApproved();
+              applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified_entitlement" });
+              try{ if(r && r.finish) r.finish(); }catch(_){ }
+              setTimeout(syncIosStore, 4000);
+            } else {
+              debug("storekit:entitlement-not-found", { reason:"verified_callback_without_active_product", receipt:r });
+              syncIosStore();
+            }
+          }catch(e){ debug("storekit:verified-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
-        .productUpdated(syncIosStore)
-        .receiptUpdated(function(){ iosBilling.receiptsSeen = true; syncIosStore(); })
-        .receiptsReady(function(){ iosBilling.receiptsSeen = true; syncIosStore(); });
-      store.validator = function(receipt, cb){ try{ cb(true); }catch(_){ } };
+        .productUpdated(function(p){ debug("storekit:product-updated", { product:p, entitlement:hasValidatedIosEntitlement(p) }); syncIosStore(); })
+        .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r, entitlement:hasValidatedIosEntitlement(r) }); syncIosStore(); })
+        .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); syncIosStore(); });
+      store.validator = function(receipt, cb){
+        debug("storekit:validator-called", { receipt:receipt, localValidator:true });
+        try{ cb(!!hasValidatedIosEntitlement(receipt)); }catch(_){ try{ cb(false); }catch(__){} }
+      };
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
+        debug("storekit:initialized", { productId: PRODUCT_ID_IOS });
         try { if(typeof store.restorePurchases === "function") store.restorePurchases().catch(function(){}); } catch(_){}
         setTimeout(syncIosStore, 2000);
       }).catch(function(err){
         iosBilling.initError = (err && err.message) || String(err);
+        debug("storekit:init-failed", { message: iosBilling.initError });
       });
     } catch(e){ iosBilling.initError = e && e.message ? e.message : String(e); }
   }
@@ -151,33 +205,77 @@
       return !!(receipts && receipts.length);
     } catch(_){ return false; }
   }
-  function isIosProductOwned(){
-    var CdvPurchase = window.CdvPurchase; var store = getStore();
-    if(!store || !CdvPurchase) return false;
-    try { if(typeof store.owned === "function" && store.owned(PRODUCT_ID_IOS)) return true; } catch(_){}
-    try { var p = getIosProduct(); if(p && p.owned) return true; } catch(_){}
-    try {
-      var ACTIVE = { approved:1, finished:1, owned:1, initiated:1 };
-      var receipts = store.localReceipts || store.receipts || [];
-      for(var i=0;i<receipts.length;i++){
-        var txs = (receipts[i] && receipts[i].transactions) || [];
-        for(var j=0;j<txs.length;j++){
-          var prods = txs[j].products || [];
-          for(var k=0;k<prods.length;k++){
-            if(prods[k] && prods[k].id === PRODUCT_ID_IOS){
-              if(ACTIVE[txs[j].state]) return true;
-              if(txs[j].isAcknowledged === true && txs[j].isConsumed !== true) return true;
-            }
-          }
-        }
+  function transactionLooksActive(tx){
+    if(!tx) return false;
+    var state = String(tx.state || tx.transactionState || tx.status || "").toLowerCase();
+    if(state === "initiated" || state === "pending" || state === "approved") return false;
+    if(state && !(state === "owned" || state === "finished" || state === "verified")) return false;
+    var expiry = tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime;
+    var expiryMs = tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs;
+    var end = expiryMs ? new Date(Number(expiryMs)) : (expiry ? new Date(expiry) : null);
+    if(end && !isNaN(end.getTime()) && end <= new Date()) return false;
+    if(tx.isConsumed === true || tx.revoked === true || tx.isRevoked === true) return false;
+    if(state === "owned" || state === "finished" || state === "verified" || tx.isAcknowledged === true) return true;
+    // Je nach Plugin-Version enthalten echte StoreKit-Receipts keinen Status.
+    // Dann akzeptieren wir nur persistente Receipt-/Transaktionsmerkmale und
+    // niemals einen gerade gestarteten/approved Kaufdialog ohne Transaktion.
+    var hasReceiptMarker = !!(tx.transactionId || tx.originalTransactionId || tx.purchaseDate || tx.lastRenewalDate || tx.expirationDate || tx.expiresDate || tx.expiresAt);
+    var hasFutureExpiry = end && !isNaN(end.getTime()) && end > new Date();
+    return !state && hasReceiptMarker && (hasFutureExpiry || (!tx.expirationDate && !tx.expiresDate && !tx.expiresAt));
+  }
+  function objectContainsActiveProduct(obj, depth){
+    if(!obj || depth > 5) return false;
+    if(Array.isArray(obj)){
+      for(var i=0;i<obj.length;i++){ if(objectContainsActiveProduct(obj[i], depth + 1)) return true; }
+      return false;
+    }
+    if(typeof obj !== "object") return false;
+    var directId = obj.id || obj.productId || obj.product_id;
+    if(directId === PRODUCT_ID_IOS && (obj.owned === true || transactionLooksActive(obj))) return true;
+    var products = obj.products || obj.productIds || obj.product_ids;
+    var hasProduct = false;
+    if(Array.isArray(products)){
+      for(var p=0;p<products.length;p++){
+        var item = products[p];
+        if(item === PRODUCT_ID_IOS || (item && (item.id === PRODUCT_ID_IOS || item.productId === PRODUCT_ID_IOS))){ hasProduct = true; break; }
       }
-    } catch(_){}
+    }
+    if(hasProduct && transactionLooksActive(obj)) return true;
+    var keys = Object.keys(obj);
+    for(var k=0;k<keys.length;k++){
+      var key = keys[k];
+      if(/token|secret|password|authorization/i.test(key)) continue;
+      if(objectContainsActiveProduct(obj[key], depth + 1)) return true;
+    }
     return false;
+  }
+  function hasValidatedIosEntitlement(sourceObj){
+    var CdvPurchase = window.CdvPurchase; var store = getStore();
+    var result = false;
+    if(store && CdvPurchase){
+      // store.owned/product.owned können während des Kauf-Flows optimistisch
+      // gesetzt werden. Für Pro zählt nur ein bestätigtes Receipt/Transaction.
+      try { if(!result && sourceObj && objectContainsActiveProduct(sourceObj, 0)) result = true; } catch(_){}
+      try {
+        if(!result){
+          var receipts = store.localReceipts || store.receipts || [];
+          result = objectContainsActiveProduct(receipts, 0);
+        }
+      } catch(_){}
+    }
+    debug(result ? "storekit:entitlement-found" : "storekit:entitlement-not-found", { result:!!result, productId:PRODUCT_ID_IOS });
+    return !!result;
+  }
+  function isIosProductOwned(){
+    var owned = hasValidatedIosEntitlement();
+    debug("hasActiveIosEntitlement:return", { result:owned });
+    return owned;
   }
   function syncIosStore(){
     if(!isIosApp()) return;
+    debug("storekit:sync-start", { before:licenseSnapshot() });
     if(isIosProductOwned()){
-      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"sync_active_entitlement" });
       return;
     }
     // Nicht demoten, wenn der Kauf gerade eben approved/verified wurde
@@ -197,7 +295,7 @@
     try {
       var lic = (window.state && window.state.license) || {};
       if(lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial")){
-        try { console.log("[CavalyraBilling][iOS] demoting – no active entitlement found"); } catch(_){}
+        debug("storekit:demoting-no-entitlement", { before:licenseSnapshot() });
         applyProState(false, "app_store", { productId: PRODUCT_ID_IOS });
       }
     } catch(_){}
@@ -400,7 +498,9 @@
         try { await store.restorePurchases(); } catch(_){}
       }
       syncIosStore();
-      return isIosProductOwned();
+      var owned = isIosProductOwned();
+      debug("checkProStatus:return", { platform:"ios", result:owned });
+      return owned;
     }
     if(isAndroidApp()){
       var r = await refreshLicenseFromServer();
@@ -410,6 +510,7 @@
   }
 
   async function startProPurchase(){
+    debug("button:kostenlos-testen-pressed", { platform:getPlatform(), before:licenseSnapshot() });
     if(isAndroidApp()){
       await openPaddleCheckout();
       return true;
@@ -419,9 +520,8 @@
     }
     // Bereits Pro? Dann keinen zweiten Kaufdialog öffnen.
     try {
-      var lic = (window.state && window.state.license) || {};
-      if(isIosProductOwned() || (lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial"))){
-        applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+      if(isIosProductOwned()){
+        applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"already_owned_before_purchase" });
         return true;
       }
     } catch(_){}
@@ -459,20 +559,21 @@
     if(!offer) offer = (typeof product.getOffer === "function") ? product.getOffer() : offers[0];
     if(!offer) throw new Error("Es ist aktuell kein Angebot für das Pro-Abo verfügbar.");
     try {
+      debug("storekit:purchase-started", { productId:PRODUCT_ID_IOS, offer:offer });
       var order = offer.order ? offer.order() : getStore().order(offer);
       await order;
-      // Kauf wurde von StoreKit akzeptiert – sofort Pro freischalten und
-      // Rückstufung durch spätere syncIosStore-Aufrufe verhindern.
-      markIosApproved();
-      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+      debug("storekit:purchase-order-returned", { productId:PRODUCT_ID_IOS, entitlement:isIosProductOwned() });
       var tries = 0;
       while(tries < 25 && !isIosProductOwned()){
         await new Promise(function(r){ setTimeout(r, 400); });
         tries++;
       }
       syncIosStore();
-      return true;
+      var ok = isIosProductOwned();
+      debug(ok ? "storekit:purchase-success" : "storekit:purchase-not-completed-yet", { productId:PRODUCT_ID_IOS, tries:tries, entitlement:ok });
+      return ok;
     } catch(e){
+      debug("storekit:purchase-failed-or-cancelled", { message:e && e.message ? e.message : String(e) });
       throw new Error((e && e.message) ? e.message : "Kauf konnte nicht gestartet werden.");
     }
   }
@@ -573,6 +674,8 @@
     refreshLicenseFromServer: refreshLicenseFromServer,
     saveKnownEmail: saveKnownEmail,
     getProductInfo: getProductInfo
+    ,hasActiveIosEntitlement: hasValidatedIosEntitlement
+    ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
 
   if(document.readyState === "complete" || document.readyState === "interactive"){
@@ -609,11 +712,11 @@
     var btn = document.getElementById("nativeBuyProBtn");
     if(btn){ btn.disabled = true; btn.textContent = isAndroid() ? "Öffne Paddle-Checkout…" : "Kauf wird gestartet…"; }
     try {
-      await window.CavalyraBilling.startProPurchase();
+      var ok = await window.CavalyraBilling.startProPurchase();
       if(isAndroid()){
         if(window.toast) window.toast("Nach Abschluss des Kaufs bitte zur App zurückkehren.");
       } else {
-        if(window.toast) window.toast("Kauf abgeschlossen – Pro wird freigeschaltet.");
+        if(window.toast) window.toast(ok ? "Kauf bestätigt – Pro ist freigeschaltet." : "Kauf gestartet – Pro wird erst nach App-Store-Bestätigung freigeschaltet.");
       }
     } catch(e){
       console.error(e);
