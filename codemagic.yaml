@@ -7,16 +7,16 @@ workflows:
   android-apk:
     name: Android APK Release
     max_build_duration: 60
+
     environment:
       groups:
         - cavalyra
       android_signing:
         - Cavalyra
       node: 22
+      java: 21
       vars:
         PACKAGE_NAME: "de.cavalyra.app"
-        # Optional: setzen, falls der Release-Build automatisch hochgezählt werden soll.
-        # CM_BUILD_NUMBER wird von Codemagic bereitgestellt.
         ANDROID_VERSION_CODE: "11"
 
     scripts:
@@ -34,13 +34,6 @@ workflows:
           chmod +x gradlew
 
       - name: Build signed Release APK
-        # Voraussetzung: In Codemagic UI ein Release-Keystore hochladen ODER
-        # folgende Env-Variablen in der Gruppe "cavalyra" setzen:
-        #   CM_KEYSTORE         (base64 der .jks/.keystore Datei)
-        #   CM_KEYSTORE_PASSWORD
-        #   CM_KEY_ALIAS
-        #   CM_KEY_PASSWORD
-        # Codemagic schreibt das entschlüsselte Keystore nach CM_KEYSTORE_PATH.
         script: |
           cd android
           ./gradlew assembleRelease
@@ -95,9 +88,6 @@ workflows:
           agvtool new-version -all $(($BUILD_NUMBER + 1))
 
       - name: Assign provisioning profile to target and generate ExportOptions
-        # `xcode-project use-profiles` patches the Xcode project mit den
-        # richtigen Signierungsdaten und erzeugt automatisch eine gültige
-        # ExportOptions.plist.
         script: |
           xcode-project use-profiles \
             --project "$XCODE_PROJECT" \
