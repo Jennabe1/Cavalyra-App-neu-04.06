@@ -150,10 +150,33 @@
     return ct.includes("json") ? r.json() : r.text();
   }
 
+  function getEmailRedirectTo(){
+    try {
+      var origin = (typeof window !== "undefined" && window.location && window.location.origin) || "";
+      // Bei Capacitor-nativen Builds ist origin z.B. capacitor://localhost – dann eigene URL nutzen
+      if(!origin || /^(capacitor|file|ionic):/i.test(origin)) return "https://cavalyra.de/";
+      return origin + "/";
+    } catch(_){ return "https://cavalyra.de/"; }
+  }
+
   const AuthApi = {
     async signUp(email, password){
-      const j = await api("/auth/v1/signup", { method:"POST", body: JSON.stringify({ email, password }) });
+      const redirectTo = encodeURIComponent(getEmailRedirectTo());
+      const j = await api("/auth/v1/signup?redirect_to=" + redirectTo, {
+        method:"POST",
+        body: JSON.stringify({ email, password, data: {}, gotrue_meta_security: {} })
+      });
       if(j?.access_token){ Auth.save(j); }
+      // Supabase liefert bei bereits existierenden (unbestätigten) Nutzern
+      // ein User-Objekt mit leerem "identities"-Array zurück und sendet keine
+      // Bestätigungs-Mail. In diesem Fall Bestätigung explizit erneut anfordern,
+      // damit der Nutzer auf jeden Fall eine E-Mail erhält.
+      try {
+        const isRepeat = j && j.user && Array.isArray(j.user.identities) && j.user.identities.length === 0 && !j.access_token;
+        if(isRepeat){
+          try { await AuthApi.resendConfirmation(email); } catch(_){}
+        }
+      } catch(_){}
       return j;
     },
     async signIn(email, password){
@@ -166,10 +189,18 @@
       Auth.clear();
     },
     async resetPassword(email){
-      return api("/auth/v1/recover", { method:"POST", body: JSON.stringify({ email }) });
+      const redirectTo = encodeURIComponent(getEmailRedirectTo());
+      return api("/auth/v1/recover?redirect_to=" + redirectTo, {
+        method:"POST",
+        body: JSON.stringify({ email })
+      });
     },
     async resendConfirmation(email){
-      return api("/auth/v1/resend", { method:"POST", body: JSON.stringify({ type:"signup", email }) });
+      const redirectTo = encodeURIComponent(getEmailRedirectTo());
+      return api("/auth/v1/resend?redirect_to=" + redirectTo, {
+        method:"POST",
+        body: JSON.stringify({ type:"signup", email })
+      });
     }
   };
 

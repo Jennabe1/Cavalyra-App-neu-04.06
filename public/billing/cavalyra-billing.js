@@ -82,10 +82,16 @@
   }
 
   // -------------------- iOS StoreKit --------------------
-  var iosBilling = { ready:false, initStarted:false, initError:null };
+  var iosBilling = { ready:false, initStarted:false, initError:null, lastApprovedAt:0, receiptsSeen:false };
 
   function getStore(){ return (window.CdvPurchase && window.CdvPurchase.store) || null; }
   function iosPlatform(){ var C=window.CdvPurchase; return C ? C.Platform.APPLE_APPSTORE : null; }
+
+  function markIosApproved(){
+    iosBilling.lastApprovedAt = Date.now();
+    iosBilling.receiptsSeen = true;
+    try { console.log("[CavalyraBilling][iOS] purchase approved / verified"); } catch(_){}
+  }
 
   function initIosBilling(){
     if(iosBilling.initStarted || !isIosApp()) return;
@@ -105,18 +111,29 @@
       }]);
       store.when()
         .approved(function(t){
-          try { applyProState(true, "app_store", { productId: PRODUCT_ID_IOS }); if(t.finish) t.finish(); } catch(_){ }
-          syncIosStore();
+          try {
+            markIosApproved();
+            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+            if(t.finish) t.finish();
+          } catch(_){ }
+          // Nicht sofort syncIosStore aufrufen – Receipt ist evtl. noch nicht verfügbar
+          // und würde den gerade freigeschalteten Pro-Status wieder demoten.
+          setTimeout(syncIosStore, 4000);
         })
-        .verified(function(r){ try{ if(r.finish) r.finish(); }catch(_){ } applyProState(true, "app_store", { productId: PRODUCT_ID_IOS }); syncIosStore(); })
+        .verified(function(r){
+          try{ if(r.finish) r.finish(); }catch(_){ }
+          markIosApproved();
+          applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+          setTimeout(syncIosStore, 4000);
+        })
         .productUpdated(syncIosStore)
-        .receiptUpdated(syncIosStore)
-        .receiptsReady(syncIosStore);
+        .receiptUpdated(function(){ iosBilling.receiptsSeen = true; syncIosStore(); })
+        .receiptsReady(function(){ iosBilling.receiptsSeen = true; syncIosStore(); });
       store.validator = function(receipt, cb){ try{ cb(true); }catch(_){ } };
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
         try { if(typeof store.restorePurchases === "function") store.restorePurchases().catch(function(){}); } catch(_){}
-        syncIosStore();
+        setTimeout(syncIosStore, 2000);
       }).catch(function(err){
         iosBilling.initError = (err && err.message) || String(err);
       });
@@ -126,6 +143,13 @@
   function getIosProduct(){
     var store = getStore(); if(!store) return null;
     try { return store.get(PRODUCT_ID_IOS, iosPlatform()) || null; } catch(_){ return null; }
+  }
+  function hasIosReceipts(){
+    var store = getStore(); if(!store) return false;
+    try {
+      var receipts = store.localReceipts || store.receipts || [];
+      return !!(receipts && receipts.length);
+    } catch(_){ return false; }
   }
   function isIosProductOwned(){
     var CdvPurchase = window.CdvPurchase; var store = getStore();
@@ -154,16 +178,29 @@
     if(!isIosApp()) return;
     if(isIosProductOwned()){
       applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
-    } else {
-      // Abo abgelaufen / gekündigt / nie gekauft: nur zurückstufen,
-      // wenn Pro zuvor über den App Store gesetzt wurde.
-      try {
-        var lic = (window.state && window.state.license) || {};
-        if(lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial")){
-          applyProState(false, "app_store", { productId: PRODUCT_ID_IOS });
-        }
-      } catch(_){}
+      return;
     }
+    // Nicht demoten, wenn der Kauf gerade eben approved/verified wurde
+    // (Receipt braucht auf StoreKit-Seite kurz, bis er lokal auftaucht).
+    if(iosBilling.lastApprovedAt && (Date.now() - iosBilling.lastApprovedAt) < 60000){
+      try { console.log("[CavalyraBilling][iOS] skip demotion – recent approval"); } catch(_){}
+      return;
+    }
+    // Nicht demoten, solange wir noch keine Receipts von StoreKit erhalten haben
+    // (verhindert False-Free direkt nach App-Start / vor restorePurchases).
+    if(!iosBilling.receiptsSeen && !hasIosReceipts()){
+      try { console.log("[CavalyraBilling][iOS] skip demotion – no receipts loaded yet"); } catch(_){}
+      return;
+    }
+    // Abo abgelaufen / gekündigt / nie gekauft: nur zurückstufen,
+    // wenn Pro zuvor über den App Store gesetzt wurde.
+    try {
+      var lic = (window.state && window.state.license) || {};
+      if(lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial")){
+        try { console.log("[CavalyraBilling][iOS] demoting – no active entitlement found"); } catch(_){}
+        applyProState(false, "app_store", { productId: PRODUCT_ID_IOS });
+      }
+    } catch(_){}
   }
 
   // -------------------- Android (Paddle) --------------------
@@ -416,6 +453,10 @@
     try {
       var order = offer.order ? offer.order() : getStore().order(offer);
       await order;
+      // Kauf wurde von StoreKit akzeptiert – sofort Pro freischalten und
+      // Rückstufung durch spätere syncIosStore-Aufrufe verhindern.
+      markIosApproved();
+      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
       var tries = 0;
       while(tries < 25 && !isIosProductOwned()){
         await new Promise(function(r){ setTimeout(r, 400); });
