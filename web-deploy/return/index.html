@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cavalyra – Zurück zur App</title>
+<meta name="robots" content="noindex" />
+<style>
+  html,body{margin:0;height:100%;background:#5C3540;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center}
+  .box{padding:24px;max-width:360px}
+  a.btn{display:inline-block;margin-top:16px;padding:12px 20px;background:#fff;color:#5C3540;border-radius:12px;text-decoration:none;font-weight:600}
+  .muted{opacity:.75;font-size:14px;margin-top:12px}
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>Zahlung erfolgreich</h1>
+    <p>Du wirst automatisch zur Cavalyra-App zurückgeleitet…</p>
+    <a class="btn" id="openApp" href="cavalyra://return">Zurück zur App</a>
+    <p class="muted">Falls sich die App nicht öffnet, tippe auf den Button oben.</p>
+  </div>
+<script>
+(function(){
+  // Auf Android öffnet Android bei verifiziertem App Link diese URL direkt in der App.
+  // Diese Seite ist der Fallback (Browser/iOS/nicht-verifiziert): Custom-Scheme aufrufen.
+  var deep = "cavalyra://return" + (location.search || "");
+  // Kleines Delay, damit Paddle das Return sauber abschließt.
+  setTimeout(function(){ window.location.href = deep; }, 400);
+})();
+</script>
+</body>
+</html>
