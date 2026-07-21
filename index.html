@@ -2770,6 +2770,14 @@ async function checkCavalyraLicenseStatus(){
 }
 
 function openCavalyraPricing(){
+  // Auf iOS (App Store) ausschließlich zum internen Pro-Tab navigieren –
+  // Apple-Compliance verbietet externe Bezahllinks.
+  try {
+    if(window.Capacitor && window.Capacitor.getPlatform && window.Capacitor.getPlatform() === "ios"){
+      navigate("pro");
+      return false;
+    }
+  } catch(_){}
   window.open(CAVALYRA_LICENSE_CONFIG.pricingUrl, "_blank", "noopener");
   return false;
 }

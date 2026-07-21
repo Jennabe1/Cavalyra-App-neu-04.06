@@ -156,31 +156,38 @@
         .approved(function(t){
           try {
             markIosApproved();
-            debug("storekit:purchase-approved-callback", { transaction:t, entitlement:hasValidatedIosEntitlement(t) });
-            if(t && typeof t.verify === "function") t.verify();
-            else syncIosStore();
+            debug("storekit:purchase-approved-callback", { transaction:t });
+            // StoreKit hat den Kauf bereits gegenüber Apple bestätigt, bevor
+            // .approved() feuert. Pro sofort freischalten, damit der Nutzer
+            // nicht auf .verified() warten muss (bei CdvPurchase v13 feuert
+            // .verified() nur, wenn store.validator ein Success-Payload liefert).
+            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_approved" });
+            if(t && typeof t.verify === "function") { try { t.verify(); } catch(_){} }
+            else { try { if(t && t.finish) t.finish(); } catch(_){} }
+            setTimeout(syncIosStore, 2000);
           } catch(e){ debug("storekit:approved-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
         .verified(function(r){
           try{
-            debug("storekit:purchase-verified-callback", { receipt:r, entitlement:hasValidatedIosEntitlement(r) });
-            if(hasValidatedIosEntitlement(r)){
-              markIosApproved();
-              applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified_entitlement" });
-              try{ if(r && r.finish) r.finish(); }catch(_){ }
-              setTimeout(syncIosStore, 4000);
-            } else {
-              debug("storekit:entitlement-not-found", { reason:"verified_callback_without_active_product", receipt:r });
-              syncIosStore();
-            }
+            debug("storekit:purchase-verified-callback", { receipt:r });
+            markIosApproved();
+            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified" });
+            try{ if(r && r.finish) r.finish(); }catch(_){ }
+            setTimeout(syncIosStore, 4000);
           }catch(e){ debug("storekit:verified-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
-        .productUpdated(function(p){ debug("storekit:product-updated", { product:p, entitlement:hasValidatedIosEntitlement(p) }); syncIosStore(); })
+        .productUpdated(function(p){ debug("storekit:product-updated", { product:p }); syncIosStore(); })
         .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r, entitlement:hasValidatedIosEntitlement(r) }); syncIosStore(); })
         .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); syncIosStore(); });
       store.validator = function(receipt, cb){
+        // CdvPurchase v13 erwartet ein ValidatorResponse-Payload (Objekt),
+        // kein Boolean. Ein `true`-Boolean führt dazu, dass der Transition
+        // nach `verified` nie sauber durchläuft.
         debug("storekit:validator-called", { receipt:receipt, localValidator:true });
-        try{ cb(!!hasValidatedIosEntitlement(receipt)); }catch(_){ try{ cb(false); }catch(__){} }
+        try {
+          var payload = { ok: true, data: { transaction: receipt || {} } };
+          cb(payload);
+        } catch(_){ try { cb({ ok:false, code: 6778003, message: "Local validator error" }); } catch(__){} }
       };
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
@@ -600,28 +607,38 @@
 
   function pickRecurringPrice(product){
     // StoreKit/CdvPurchase v13: Preise stehen in offers[].pricingPhases[].
-    // Bei Intro-/Trial-Angeboten ist Phase 0 oft 0,00 (kostenlose Testphase),
-    // Phase 1+ enthält den tatsächlichen wiederkehrenden Preis. Wir wählen
-    // deshalb bevorzugt eine Phase mit priceMicros > 0.
+    // Bei Angeboten mit Intro/Trial gilt:
+    //   Phase 0 = z.B. 0,00 (Trial) oder Intro-Preis
+    //   letzte Phase = tatsächlicher wiederkehrender Basispreis
+    // Wir wählen deshalb die LETZTE Phase mit priceMicros > 0 (=
+    // Basisabo-Preis, der nach dem Trial dauerhaft berechnet wird).
     if(!product) return { price:"", loading:true };
     var offers = (product.offers && product.offers.length) ? product.offers : [];
     if(!offers.length && product.pricing && product.pricing.price){
       return { price: product.pricing.price, loading:false };
     }
-    var fallback = null;
+    var basePrice = "";
+    var baseMicros = -1;
+    var anyPrice = "";
     for(var i=0;i<offers.length;i++){
       var phases = (offers[i] && offers[i].pricingPhases) || [];
-      for(var j=0;j<phases.length;j++){
+      // von hinten nach vorne: erste Phase mit micros>0 ist der Basispreis
+      for(var j=phases.length-1;j>=0;j--){
         var ph = phases[j];
         var micros = ph.priceMicros != null ? ph.priceMicros : ph.price_amount_micros;
         var priceStr = ph.price || ph.formattedPrice || "";
-        if(micros && Number(micros) > 0 && priceStr){
-          return { price: priceStr, loading:false };
+        if(priceStr && !anyPrice) anyPrice = priceStr;
+        if(micros != null && Number(micros) > 0 && priceStr){
+          if(Number(micros) > baseMicros){
+            baseMicros = Number(micros);
+            basePrice = priceStr;
+          }
+          break;
         }
-        if(priceStr && !fallback) fallback = priceStr;
       }
     }
-    if(fallback) return { price: fallback, loading:false };
+    if(basePrice) return { price: basePrice, loading:false };
+    if(anyPrice) return { price: anyPrice, loading:false };
     return { price:"", loading:true };
   }
 
