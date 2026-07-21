@@ -167,14 +167,22 @@
         body: JSON.stringify({ email, password, data: {}, gotrue_meta_security: {} })
       });
       if(j?.access_token){ Auth.save(j); }
-      // Supabase liefert bei bereits existierenden (unbestätigten) Nutzern
-      // ein User-Objekt mit leerem "identities"-Array zurück und sendet keine
-      // Bestätigungs-Mail. In diesem Fall Bestätigung explizit erneut anfordern,
-      // damit der Nutzer auf jeden Fall eine E-Mail erhält.
+      // Supabase liefert bei bereits existierenden Nutzern ein User-Objekt mit
+      // leerem "identities"-Array zurück und sendet KEINE neue Bestätigungs-Mail
+      // (Anti-Enumeration). Wir versuchen explizit ein Resend – falls das
+      // scheitert (User schon bestätigt / Rate-Limit), markieren wir das
+      // Ergebnis, damit die UI eine klare Meldung anzeigen kann.
       try {
         const isRepeat = j && j.user && Array.isArray(j.user.identities) && j.user.identities.length === 0 && !j.access_token;
         if(isRepeat){
-          try { await AuthApi.resendConfirmation(email); } catch(_){}
+          j.__alreadyRegistered = true;
+          j.__resendOk = false;
+          try {
+            await AuthApi.resendConfirmation(email);
+            j.__resendOk = true;
+          } catch(e){
+            j.__resendError = e;
+          }
         }
       } catch(_){}
       return j;
@@ -710,7 +718,13 @@
       const r = await AuthApi.signUp(email, pw);
       if(r?.access_token){ await onLogin(); return { ok:true, confirmed:true, data:r }; }
       // No session -> email confirmation required
-      return { ok:true, confirmed:false, data:r };
+      return {
+        ok:true,
+        confirmed:false,
+        alreadyRegistered: !!(r && r.__alreadyRegistered),
+        resendOk: !!(r && r.__resendOk),
+        data:r
+      };
     },
     async signIn(email, pw){ const r = await AuthApi.signIn(email, pw); await onLogin(); return r; },
     async signOut(){ await AuthApi.signOut(); await onLogout(); },

@@ -193,9 +193,19 @@
             close("ok");
             if(res?.confirmed){
               await showInfo("Konto erfolgreich erstellt", "Dein Cavalyra-Konto ist aktiv.\n\nDie Cloud-Synchronisation ist jetzt aktiviert.");
+            } else if(res?.alreadyRegistered){
+              // Supabase sendet aus Sicherheitsgründen keine erneute Bestätigungs-
+              // mail an bereits existierende Adressen. Wir sagen das klar.
+              if(res.resendOk){
+                await showInfo("E-Mail erneut gesendet",
+                  "Diese E-Mail-Adresse ist bereits registriert.\n\nWir haben dir soeben erneut eine Bestätigungs-E-Mail an " + email + " geschickt.\n\nBitte prüfe auch deinen Spam-Ordner. Falls dein Konto schon bestätigt ist, melde dich einfach direkt an.");
+              } else {
+                await showInfo("E-Mail bereits registriert",
+                  "Diese E-Mail-Adresse ist bereits registriert.\n\nFalls dein Konto noch nicht bestätigt ist, öffne bitte die letzte Bestätigungs-E-Mail (auch im Spam-Ordner).\n\nAndernfalls kannst du dich direkt anmelden oder das Passwort zurücksetzen.");
+              }
             } else {
               await showInfo("Konto erfolgreich erstellt",
-                "Wir haben dir eine Bestätigungs-E-Mail gesendet.\n\nBitte bestätige deine E-Mail über den Link in der Nachricht.\n\nDanach kannst du dich anmelden und die Cloud-Synchronisation nutzen.");
+                "Wir haben dir eine Bestätigungs-E-Mail an " + email + " gesendet.\n\nBitte prüfe auch deinen Spam-Ordner und bestätige deine E-Mail über den Link.\n\nDanach kannst du dich anmelden und die Cloud-Synchronisation nutzen.");
             }
           } else {
             await window.CavalyraSync.signIn(email, pw);

@@ -417,7 +417,15 @@
     if(!isIosApp()){
       throw new Error("In-App-Käufe sind nur in der mobilen App verfügbar.");
     }
-    // iOS StoreKit-Kauf (unverändert)
+    // Bereits Pro? Dann keinen zweiten Kaufdialog öffnen.
+    try {
+      var lic = (window.state && window.state.license) || {};
+      if(isIosProductOwned() || (lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial"))){
+        applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+        return true;
+      }
+    } catch(_){}
+    // iOS StoreKit-Kauf
     if(!iosBilling.initStarted) initIosBilling();
     if(iosBilling.initError) throw new Error(iosBilling.initError);
     var waited = 0;
@@ -489,22 +497,49 @@
     return isIosProductOwned();
   }
 
+  function pickRecurringPrice(product){
+    // StoreKit/CdvPurchase v13: Preise stehen in offers[].pricingPhases[].
+    // Bei Intro-/Trial-Angeboten ist Phase 0 oft 0,00 (kostenlose Testphase),
+    // Phase 1+ enthält den tatsächlichen wiederkehrenden Preis. Wir wählen
+    // deshalb bevorzugt eine Phase mit priceMicros > 0.
+    if(!product) return { price:"", loading:true };
+    var offers = (product.offers && product.offers.length) ? product.offers : [];
+    if(!offers.length && product.pricing && product.pricing.price){
+      return { price: product.pricing.price, loading:false };
+    }
+    var fallback = null;
+    for(var i=0;i<offers.length;i++){
+      var phases = (offers[i] && offers[i].pricingPhases) || [];
+      for(var j=0;j<phases.length;j++){
+        var ph = phases[j];
+        var micros = ph.priceMicros != null ? ph.priceMicros : ph.price_amount_micros;
+        var priceStr = ph.price || ph.formattedPrice || "";
+        if(micros && Number(micros) > 0 && priceStr){
+          return { price: priceStr, loading:false };
+        }
+        if(priceStr && !fallback) fallback = priceStr;
+      }
+    }
+    if(fallback) return { price: fallback, loading:false };
+    return { price:"", loading:true };
+  }
+
   function getProductInfo(){
     if(isIosApp()){
       var p = getIosProduct();
-      if(!p) return null;
-      var offer = (typeof p.getOffer === "function") ? p.getOffer() : (p.offers && p.offers[0]);
-      var pricing = offer && offer.pricingPhases && offer.pricingPhases[0];
+      if(!p) return { id: PRODUCT_ID_IOS, title:"Cavalyra Pro", description:"", priceString:"", loading:true, owned:false };
+      var pr = pickRecurringPrice(p);
       return {
         id: p.id,
         title: p.title || "Cavalyra Pro",
         description: p.description || "",
-        priceString: pricing ? pricing.price : ((p.pricing && p.pricing.price) || ""),
+        priceString: pr.price,
+        loading: pr.loading,
         owned: !!p.owned
       };
     }
     // Android: Paddle-Preis statisch (Server ist Source of Truth)
-    return { id:"paddle-pro-monthly", title:"Cavalyra Pro", description:"", priceString:"6,99 € / Monat", owned:false };
+    return { id:"paddle-pro-monthly", title:"Cavalyra Pro", description:"", priceString:"6,99 € / Monat", loading:false, owned:false };
   }
 
   function init(){
@@ -619,18 +654,44 @@
   window.cavalyraAndroidBuyPro = window.cavalyraNativeBuyPro;
   window.cavalyraAndroidRestore = window.cavalyraNativeRestore;
 
+  var _proRerenderScheduled = false;
+  function schedulePriceRerender(){
+    if(_proRerenderScheduled) return;
+    _proRerenderScheduled = true;
+    var attempts = 0;
+    var iv = setInterval(function(){
+      attempts++;
+      var info = window.CavalyraBilling.getProductInfo && window.CavalyraBilling.getProductInfo();
+      var visible = document.getElementById("screen-pro") && document.getElementById("screen-pro").offsetParent !== null;
+      if(info && !info.loading && info.priceString){
+        clearInterval(iv); _proRerenderScheduled = false;
+        if(visible) renderProNative();
+      } else if(attempts > 60){
+        clearInterval(iv); _proRerenderScheduled = false;
+      }
+    }, 500);
+  }
+
   function renderProNative(){
     var statusLabel = (typeof window.licenseStatusLabel === "function") ? window.licenseStatusLabel() : "";
     var statusClass = (typeof window.licenseStatusClass === "function") ? window.licenseStatusClass() : "";
     var statusText  = (typeof window.licenseStatusText  === "function") ? window.licenseStatusText()  : "";
     var info = (window.CavalyraBilling.getProductInfo && window.CavalyraBilling.getProductInfo()) || null;
-    var FALLBACK_PRICE = "6,99 € / Monat";
-    var priceText = (info && info.priceString) ? info.priceString : FALLBACK_PRICE;
+    var priceReady = !!(info && info.priceString && !info.loading);
+    // Auf iOS niemals einen erfundenen Fallback-Preis anzeigen, wenn StoreKit
+    // den echten Produktpreis noch nicht geliefert hat – sonst wird u.U. der
+    // 0,00-Trial-Preis mit einem falschen Wert überschrieben oder umgekehrt.
+    var priceText = priceReady
+      ? info.priceString
+      : (isIos() ? "wird geladen …" : "6,99 € / Monat");
+    if(!priceReady && isIos()) schedulePriceRerender();
     var storeName = isIos() ? "App Store" : "Paddle";
     var manageHint = isIos()
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
       : "Dein Pro-Abo wird sicher über Paddle abgerechnet und kann jederzeit über das Paddle-Kundenportal verwaltet oder gekündigt werden.";
-    var priceLine = '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit über ' + esc(storeName) + ' kündbar.</p>';
+    var priceLine = priceReady
+      ? '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit über ' + esc(storeName) + ' kündbar.</p>'
+      : '<p class="small"><strong>Kostenlos testen</strong> – Preis wird vom ' + esc(storeName) + ' geladen …</p>';
 
     var subscriptionDetails = ''
       + '<div class="card" style="margin-bottom:12px;">'
