@@ -2770,7 +2770,7 @@ async function checkCavalyraLicenseStatus(){
 }
 
 function openCavalyraPricing(){
-  navigate("pro");
+  window.open(CAVALYRA_LICENSE_CONFIG.pricingUrl, "_blank", "noopener");
   return false;
 }
 
