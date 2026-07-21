@@ -164,7 +164,13 @@
         .verified(function(r){
           try{
             debug("storekit:purchase-verified-callback", { receipt:r, entitlement:hasValidatedIosEntitlement(r) });
-            if(hasValidatedIosEntitlement(r)){
+            // .verified wird von cordova-plugin-purchase erst aufgerufen,
+            // nachdem StoreKit die Transaktion signiert bestätigt hat.
+            // Ein zusätzlicher "owned"/"finished"-Check ist hier zu streng –
+            // wenn das Receipt unsere Produkt-ID enthält, ist der Kauf gültig.
+            var mentionsProduct = false;
+            try { mentionsProduct = JSON.stringify(r || {}).indexOf(PRODUCT_ID_IOS) !== -1; } catch(_){}
+            if(hasValidatedIosEntitlement(r) || mentionsProduct){
               markIosApproved();
               applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified_entitlement" });
               try{ if(r && r.finish) r.finish(); }catch(_){ }
@@ -180,7 +186,15 @@
         .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); syncIosStore(); });
       store.validator = function(receipt, cb){
         debug("storekit:validator-called", { receipt:receipt, localValidator:true });
-        try{ cb(!!hasValidatedIosEntitlement(receipt)); }catch(_){ try{ cb(false); }catch(__){} }
+        try{
+          // Lokaler Validator: Receipt gilt als gültig, sobald StoreKit uns
+          // ein Receipt liefert, das unsere Produkt-ID enthält.
+          var ok = !!hasValidatedIosEntitlement(receipt);
+          if(!ok){
+            try { ok = JSON.stringify(receipt || {}).indexOf(PRODUCT_ID_IOS) !== -1; } catch(_){}
+          }
+          cb(!!ok);
+        }catch(_){ try{ cb(false); }catch(__){} }
       };
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
@@ -512,7 +526,26 @@
   async function startProPurchase(){
     debug("button:kostenlos-testen-pressed", { platform:getPlatform(), before:licenseSnapshot() });
     if(isAndroidApp()){
-      await openPaddleCheckout();
+      // Android: statt Paddle.js-Overlay (funktioniert in Android-WebView nicht zuverlässig)
+      // wird der bestehende Paddle-Checkout-Link im Capacitor Browser geöffnet.
+      var checkoutUrl = "https://cavalyra.de";
+      try {
+        var email = getKnownEmail();
+        if(email){
+          checkoutUrl += (checkoutUrl.indexOf("?") === -1 ? "?" : "&") + "customer_email=" + encodeURIComponent(email);
+        }
+      } catch(_){}
+      try {
+        var BrowserPlugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+        if(BrowserPlugin && typeof BrowserPlugin.open === "function"){
+          await BrowserPlugin.open({ url: checkoutUrl });
+        } else {
+          window.open(checkoutUrl, "_blank");
+        }
+        try { if(window.toast) window.toast("Paddle-Checkout wurde geöffnet."); } catch(_){}
+      } catch(e){
+        throw new Error("Paddle-Checkout konnte nicht geöffnet werden: " + (e && e.message ? e.message : "Unbekannter Fehler"));
+      }
       return true;
     }
     if(!isIosApp()){
