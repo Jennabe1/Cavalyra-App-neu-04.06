@@ -2706,9 +2706,34 @@ function licenseStatusText(){
   return "Du nutzt aktuell die freie Version.";
 }
 
+function isIosPlatform(){
+  try { return !!(window.Capacitor && window.Capacitor.getPlatform && window.Capacitor.getPlatform() === "ios"); } catch(_){ return false; }
+}
+function isStoreKitManaged(){
+  try {
+    const lic = (state && state.license) || {};
+    if(lic.source === "app_store") return true;
+    return isIosPlatform();
+  } catch(_){ return false; }
+}
+
 async function checkCavalyraLicenseStatus(){
   const input = document.getElementById("licenseEmailInput");
   const email = (input ? input.value : licenseEmail()).trim().toLowerCase();
+
+  // Apple StoreKit hat auf iOS immer Vorrang – Paddle-Check darf einen
+  // bestätigten StoreKit-Kauf niemals überschreiben.
+  if(isStoreKitManaged()){
+    const lic = state.license || {};
+    if(lic.source === "app_store" && isLicenseAccessStatus(lic.status)){
+      toast("Pro ist über den App Store aktiv.");
+      return true;
+    }
+    if(isIosPlatform()){
+      toast("Auf iOS erfolgt die Lizenzprüfung automatisch über den App Store.");
+      return false;
+    }
+  }
 
   if(!email || !email.includes("@")){
     toast("Bitte gib die E-Mail-Adresse ein, mit der du Cavalyra gekauft hast.");
@@ -2829,6 +2854,9 @@ function hasProAccess(){
    UND ein neuer Check den Status auf free/expired setzt, wird Pro entzogen. */
 async function refreshLicenseSilently(){
   try{
+    // iOS / StoreKit-verwaltet: Paddle-Check überspringen, damit ein bestätigter
+    // Apple-Kauf niemals durch einen Paddle-Free-Status überschrieben wird.
+    if(isStoreKitManaged()) return;
     const email = licenseEmail();
     if(!email || !email.includes("@")) return;
     const url = CAVALYRA_LICENSE_CONFIG.checkEndpoint + "?email=" + encodeURIComponent(email);
@@ -2838,6 +2866,8 @@ async function refreshLicenseSilently(){
     if(!data || !data.ok) return;
     const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
     const prev = normalizeLicense();
+    // Zusätzliche Absicherung: bestätigte StoreKit-Lizenz nie überschreiben.
+    if(prev.source === "app_store" && isLicenseAccessStatus(prev.status)) return;
     const prevWasPro = prev.status === "pro" || prev.status === "trial";
     const nowPro = newStatus === "pro" || newStatus === "trial";
     state.license = Object.assign({}, prev, {
@@ -2857,6 +2887,8 @@ async function refreshLicenseSilently(){
 
 function initLicenseAutoCheck(){
   try{
+    // iOS: kein automatischer Paddle-Check. Lizenz läuft ausschließlich über StoreKit (syncIosStore).
+    if(isIosPlatform()) return;
     setTimeout(refreshLicenseSilently, 3000);
     const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
     if(App && App.addListener){ App.addListener("resume", refreshLicenseSilently); }
