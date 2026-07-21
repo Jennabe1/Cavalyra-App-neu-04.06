@@ -152,7 +152,18 @@
   }
   function syncIosStore(){
     if(!isIosApp()) return;
-    if(isIosProductOwned()) applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+    if(isIosProductOwned()){
+      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS });
+    } else {
+      // Abo abgelaufen / gekündigt / nie gekauft: nur zurückstufen,
+      // wenn Pro zuvor über den App Store gesetzt wurde.
+      try {
+        var lic = (window.state && window.state.license) || {};
+        if(lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial")){
+          applyProState(false, "app_store", { productId: PRODUCT_ID_IOS });
+        }
+      } catch(_){}
+    }
   }
 
   // -------------------- Android (Paddle) --------------------

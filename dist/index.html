@@ -150,19 +150,22 @@ img,video,canvas{max-width:100%;height:auto}
   .topbar .page-title{font-size:18px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .topbar-right{flex-shrink:0;gap:6px;flex-wrap:nowrap;overflow:hidden}
   .topbar .status-pill{display:none}
-  .content{padding:16px 14px calc(64px + env(safe-area-inset-bottom))}
+  .content{padding:16px 14px calc(84px + env(safe-area-inset-bottom))}
   .grid-2,.grid-3,.dash-top,.calendar-wrap,.course-list,.pricing{grid-template-columns:1fr}
   .quick{grid-template-columns:1fr 1fr}
   .scan-grid{grid-template-columns:1fr 1fr}
   .day{min-height:56px}.mini{display:none}
-  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;padding-top:6px;padding-bottom:env(safe-area-inset-bottom);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);background:var(--acc-dark);z-index:50;align-items:flex-end;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1)}
-  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.55);font-size:10px;line-height:1.1;display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;padding:0 4px;justify-content:flex-end;font-family:var(--sans);overflow:visible}
+  .bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;padding:10px 4px calc(10px + env(safe-area-inset-bottom));padding-left:max(4px,env(safe-area-inset-left));padding-right:max(4px,env(safe-area-inset-right));background:var(--acc-dark);z-index:50;align-items:center;justify-content:space-around;border-top:1px solid rgba(255,255,255,.1);min-height:64px}
+  .bottom-nav button{border:none;background:transparent;color:rgba(255,255,255,.6);font-size:11px;line-height:1.15;display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;padding:6px 4px;justify-content:center;font-family:var(--sans);overflow:visible}
   .bottom-nav button.active{color:#fff}
-  .bottom-nav .ico{font-size:22px;line-height:1}
+  .bottom-nav .ico{font-size:24px;line-height:1}
+  /* Cavalyra-Rosa auch unter der Bottom-Nav (Safe-Area-/Systemleisten-Bereich) */
+  html,body{background:var(--acc-dark)}
+  .main,.content{background:var(--bg)}
 }
 /* iOS-Feinjustierung: Bottom Nav ~3px näher am Home Indicator (nur iOS/WebKit) */
 @supports (-webkit-touch-callout: none) {
-  .bottom-nav{padding-bottom:max(0px, calc(env(safe-area-inset-bottom) - 3px))}
+  .bottom-nav{padding-bottom:max(6px, calc(env(safe-area-inset-bottom) - 3px))}
 }
 @media(max-width:420px){
   .topbar .horse-switcher{max-width:120px}
@@ -1307,7 +1310,7 @@ img,video,canvas{max-width:100%;height:auto}
 
 /* ===== Cavalyra App Full-Width Polish (mobile) ===== */
 @media(max-width:850px){
-  .content{padding:14px 8px calc(64px + env(safe-area-inset-bottom))!important}
+  .content{padding:14px 8px calc(84px + env(safe-area-inset-bottom))!important}
 }
 @media(max-width:520px){
   #screen-courses .hero{padding:18px 10px 10px!important}
@@ -2029,12 +2032,61 @@ img,video,canvas{max-width:100%;height:auto}
     } catch(e) { /* im Web still fehlschlagen */ }
   })();
 </script>
+<script>
+  // Paddle-Konfiguration aus Vite-Umgebungsvariablen (Build-Zeit-Ersetzung).
+  // Werte werden aus .env / .env.local bzw. den CI-Secrets geladen:
+  //   VITE_PADDLE_CLIENT_TOKEN=live_xxx | test_xxx
+  //   VITE_PADDLE_ENV=production | sandbox
+  (function(){
+    var token = "live_64c2e8ee88b05cd20681253c69c";
+    var env   = "production";
+    // Nicht ersetzte Platzhalter (z.B. wenn Datei nicht durch Vite lief) durch Fallback ersetzen:
+    if(!token || token.indexOf("%VITE_") === 0) token = "live_64c2e8ee88b05cd20681253c69c";
+    if(!env   || env.indexOf("%VITE_")   === 0) env   = "production";
+    window.CAVALYRA_PADDLE_CLIENT_TOKEN = token;
+    window.CAVALYRA_PADDLE_ENV = env;
+  })();
+</script>
 <script src="/billing/cavalyra-billing.js" defer></script>
 <!-- Cloud (v1 MVP wird ab v2 automatisch neutralisiert) -->
 <script src="/cloud/cavalyra-cloud.js" defer></script>
 <!-- Cloud Sync Engine v2 (Final Architecture) -->
 <script src="/cloud/cavalyra-sync-engine.js" defer></script>
 <script src="/cloud/cavalyra-sync-ui.js" defer></script>
+<!-- Android Sideload Auto-Updater (nur aktiv im nativen Android-Build) -->
+<script src="/updater/cavalyra-android-updater.js" defer></script>
+<script>
+/* First-launch Hinweis (nur nativer Build): lokale Datenspeicherung erklären. */
+(function(){
+  var KEY = "cavalyra:onboarding:v1";
+  function isNative(){ try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch(_){ return false; } }
+  function show(){
+    if(document.getElementById("cavalyraOnboardingModal")) return;
+    var wrap = document.createElement("div");
+    wrap.id = "cavalyraOnboardingModal";
+    wrap.style.cssText = "position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px;font-family:inherit;";
+    wrap.innerHTML = ''
+      + '<div style="max-width:420px;width:100%;background:#f7ecd6;color:#3a1f26;border-radius:16px;padding:22px 20px;box-shadow:0 20px 60px rgba(0,0,0,.4);">'
+      +   '<h2 style="margin:0 0 10px 0;font-size:20px;">Deine Daten bleiben auf deinem Gerät</h2>'
+      +   '<p style="margin:0 0 12px 0;font-size:14px;line-height:1.5;">Standardmäßig werden alle Pferdedaten lokal auf deinem Gerät gespeichert.</p>'
+      +   '<p style="margin:0 0 18px 0;font-size:14px;line-height:1.5;">Unter <b>Profil → Datenbank</b> kannst du jederzeit kostenlos die Cloud-Sicherung aktivieren, damit deine Daten bei einem Gerätewechsel oder einer Neuinstallation erhalten bleiben.</p>'
+      +   '<button id="cavOnboardOk" style="width:100%;border:0;border-radius:12px;padding:12px;background:#5c3540;color:#fff;font-weight:600;cursor:pointer;">Verstanden</button>'
+      + '</div>';
+    document.body.appendChild(wrap);
+    document.getElementById("cavOnboardOk").onclick = function(){
+      try { localStorage.setItem(KEY, "1"); } catch(_){}
+      wrap.remove();
+    };
+  }
+  function check(){
+    try { if(localStorage.getItem(KEY)) return; } catch(_){ return; }
+    if(!isNative()) return;
+    setTimeout(show, 1200);
+  }
+  if(document.readyState === "complete" || document.readyState === "interactive") setTimeout(check, 500);
+  else window.addEventListener("DOMContentLoaded", function(){ setTimeout(check, 500); });
+})();
+</script>
 <style id="cav-ipad-scan-fix">
 /* iPad / iOS Fix: horizontales Scrollen im Body Scanner verhindern */
 html,body{max-width:100vw;overflow-x:hidden}
@@ -2538,7 +2590,8 @@ function seedHorsebook(){return [
 const CAVALYRA_LICENSE_CONFIG = {
   pricingUrl: "https://cavalyra.de/#preise",
   customerPortalUrl: "https://customer-portal.paddle.com/cpl_01ksj34k26v4xebfvgtnb3xbf9",
-  checkEndpoint: "/.netlify/functions/check-license"
+  checkEndpoint: "https://cavalyra.de/.netlify/functions/check-license",
+  offlineGraceDays: 14
 };
 const CAVALYRA_LICENSE_STORAGE_KEYS = ["cavalyra_license", "cavalyra_license_v1", "cavalyra_pro_license", "cavalyra_pro_access"];
 
@@ -2748,7 +2801,7 @@ function trialDaysLeft(){
   }
   const start = new Date((state.license.trialStart||todayISO())+"T12:00:00");
   const diff = Math.floor((new Date() - start)/(1000*60*60*24));
-  return Math.max(0, 7 - diff);
+  return Math.max(0, 3 - diff);
 }
 
 
@@ -2761,6 +2814,53 @@ function hasProAccess(){
   }
   return false;
 }
+
+/* Silent license refresh: läuft beim Start und bei App-Resume.
+   Fehlschläge (kein Internet, Server down) verändern den Status NICHT.
+   Erst wenn der letzte erfolgreiche Check älter als offlineGraceDays ist
+   UND ein neuer Check den Status auf free/expired setzt, wird Pro entzogen. */
+async function refreshLicenseSilently(){
+  try{
+    const email = licenseEmail();
+    if(!email || !email.includes("@")) return;
+    const url = CAVALYRA_LICENSE_CONFIG.checkEndpoint + "?email=" + encodeURIComponent(email);
+    const res = await fetch(url, { method:"GET", headers:{ "Accept":"application/json" }, cache:"no-store" });
+    if(!res.ok) return;
+    const data = await res.json().catch(()=>null);
+    if(!data || !data.ok) return;
+    const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
+    const prev = normalizeLicense();
+    const prevWasPro = prev.status === "pro" || prev.status === "trial";
+    const nowPro = newStatus === "pro" || newStatus === "trial";
+    state.license = Object.assign({}, prev, {
+      status: newStatus,
+      pro: nowPro,
+      email: email,
+      source: "paddle-silent",
+      checkedAt: new Date().toISOString(),
+      validUntil: data.validUntil || prev.validUntil || "",
+      subscriptionId: data.subscriptionId || prev.subscriptionId || "",
+      customerId: data.customerId || prev.customerId || ""
+    });
+    saveLicense(true);
+    if(prevWasPro !== nowPro){ try{ render(); }catch(_){} }
+  }catch(_){ /* offline / server down: still keep last known good status */ }
+}
+
+function initLicenseAutoCheck(){
+  try{
+    setTimeout(refreshLicenseSilently, 3000);
+    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if(App && App.addListener){ App.addListener("resume", refreshLicenseSilently); }
+    window.addEventListener("focus", function(){
+      const lic = state.license || {};
+      const last = lic.checkedAt ? new Date(lic.checkedAt).getTime() : 0;
+      if(Date.now() - last > 6*60*60*1000) refreshLicenseSilently();
+    });
+  }catch(_){}
+}
+if(document.readyState === "complete" || document.readyState === "interactive") setTimeout(initLicenseAutoCheck, 0);
+else window.addEventListener("DOMContentLoaded", initLicenseAutoCheck);
 
 
 function statusText(){
