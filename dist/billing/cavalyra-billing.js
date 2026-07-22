@@ -167,123 +167,119 @@
   }
 
   // -------------------- Android (Paddle) --------------------
-  function getKnownEmail(){
-    try {
-      var stored = localStorage.getItem(LICENSE_EMAIL_STORAGE);
-      if(stored) return stored;
-    } catch(_){}
-    try {
-      if(window.state && window.state.license && window.state.license.email) return window.state.license.email;
-    } catch(_){}
-    // Cloud-Account?
-    try {
-      var s = window.CavalyraSyncEngine && window.CavalyraSyncEngine.getSession && window.CavalyraSyncEngine.getSession();
-      if(s && s.user && s.user.email) return s.user.email;
-    } catch(_){}
-    try {
-      var s2 = window.CavalyraCloud && window.CavalyraCloud.getSession && window.CavalyraCloud.getSession();
-      if(s2 && s2.user && s2.user.email) return s2.user.email;
-    } catch(_){}
+function getInstallationId() {
+  try {
+    var id = localStorage.getItem("cavalyra_installation_id");
+
+    if (!id) {
+      if (window.crypto && window.crypto.randomUUID) {
+        id = window.crypto.randomUUID();
+      } else {
+        id = "id_" + Date.now() + "_" + Math.random().toString(36).substring(2, 12);
+      }
+
+      localStorage.setItem("cavalyra_installation_id", id);
+    }
+
+    return id;
+  } catch (_) {
+    return "id_" + Date.now();
+  }
+}
+
+function getKnownEmail() {
+  try {
+    return (
+      localStorage.getItem(LICENSE_EMAIL_STORAGE) ||
+      ""
+    ).trim().toLowerCase();
+  } catch (_) {
     return "";
   }
-  function saveKnownEmail(email){
-    try { if(email) localStorage.setItem(LICENSE_EMAIL_STORAGE, email); } catch(_){}
-  }
+}
 
-  async function refreshLicenseFromServer(explicitEmail){
-    var email = (explicitEmail || getKnownEmail() || "").trim().toLowerCase();
-    if(!email || email.indexOf("@") === -1){
-      return { ok:false, status:"free", reason:"no_email" };
+function saveKnownEmail(email) {
+  try {
+    if (email) {
+      localStorage.setItem(LICENSE_EMAIL_STORAGE, email.trim().toLowerCase());
     }
-    try {
-      var res = await fetch(LICENSE_CHECK_URL + "?email=" + encodeURIComponent(email), {
-        method:"GET",
-        headers:{ "Accept":"application/json" }
-      });
-      var data = await res.json().catch(function(){ return null; });
-      if(!res.ok || !data){
-        return { ok:false, status:"free", reason:"network" };
-      }
-      var status = String(data.status || "free").toLowerCase();
-      var isPro  = status === "pro" || status === "trial";
-      saveKnownEmail(email);
-      applyProState(isPro, "paddle", {
-        email: email,
-        status: status,
-        customerId: data.customerId || "",
-        subscriptionId: data.subscriptionId || "",
-        validUntil: data.validUntil || "",
-        trial: status === "trial"
-      });
-      // Serverseitige Lizenz-Speicherung: an cloud-sync andocken, falls verfügbar.
-      try {
-        if(window.CavalyraSyncEngine && typeof window.CavalyraSyncEngine.recordLicense === "function"){
-          window.CavalyraSyncEngine.recordLicense({
-            email: email,
-            paddle_customer_id: data.customerId || null,
-            status: status,
-            plan: data.plan || "pro",
-            valid_until: data.validUntil || null,
-            purchased_at: data.purchasedAt || null,
-            trial: status === "trial"
-          });
+  } catch (_) {}
+}
+
+async function refreshLicenseFromServer() {
+
+  var installationId = getInstallationId();
+
+  try {
+
+    var res = await fetch(
+      LICENSE_CHECK_URL +
+      "?installationId=" +
+      encodeURIComponent(installationId),
+      {
+        method: "GET",
+        headers: {
+          "Accept": "application/json"
         }
-      } catch(_){}
-      return { ok:true, status:status, active:isPro };
-    } catch(e){
-      return { ok:false, status:"free", reason:"exception", message:e && e.message };
-    }
-  }
+      }
+    );
 
-  // Paddle.js dynamisch laden und einmalig initialisieren
-  var paddleJsPromise = null;
-  function loadPaddleJs(){
-    if(paddleJsPromise) return paddleJsPromise;
-    paddleJsPromise = new Promise(function(resolve, reject){
-      if(window.Paddle) return resolve(window.Paddle);
-      var s = document.createElement("script");
-      s.src = "https://cdn.paddle.com/paddle/v2/paddle.js";
-      s.async = true;
-      s.onload = function(){
-        try {
-          var token = getPaddleToken();
-          if(getPaddleEnv() === "sandbox" && window.Paddle && window.Paddle.Environment) {
-            window.Paddle.Environment.set("sandbox");
-          }
-          if(window.Paddle && window.Paddle.Initialize){
-            window.Paddle.Initialize({ token: token });
-          }
-          resolve(window.Paddle);
-        } catch(e){ reject(e); }
-      };
-      s.onerror = function(){
-        paddleJsPromise = null;
-        reject(new Error("Paddle-Checkout konnte nicht geladen werden. Bitte prüfe deine Internetverbindung und versuche es erneut."));
-      };
-      document.head.appendChild(s);
+    var data = await res.json().catch(function () {
+      return null;
     });
-    return paddleJsPromise;
+
+    if (!res.ok || !data) {
+      return {
+        ok: false,
+        status: "free",
+        reason: "network"
+     async function openPaddleCheckout() {
+
+  var installationId = getInstallationId();
+  var email = getKnownEmail();
+
+  var res = await fetch(
+    "https://cavalyra.de/.netlify/functions/create-paddle-checkout",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        installationId: installationId,
+        email: email || null
+      })
+    }
+  );
+
+  var data = await res.json().catch(function () {
+    return null;
+  });
+
+  if (!res.ok || !data || !data.checkoutUrl) {
+    throw new Error(
+      (data && data.error) ||
+      "Checkout konnte nicht erstellt werden."
+    );
   }
 
-  async function openPaddleCheckout(){
-    var token = getPaddleToken();
-    if(!token){
-      throw new Error("Paddle ist derzeit nicht konfiguriert. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
-    }
-    if(!isValidPaddleToken(token)){
-      throw new Error("Der hinterlegte Paddle-Zugang ist ungültig. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
-    }
-    var email = getKnownEmail();
-    await loadPaddleJs();
-    if(!(window.Paddle && window.Paddle.Checkout && window.Paddle.Checkout.open)){
-      throw new Error("Paddle-Checkout konnte nicht gestartet werden. Bitte versuche es später erneut.");
-    }
-    return await new Promise(function(resolve, reject){
-      var settled = false;
-      function done(msg){
-        if(settled) return; settled = true;
-        try { if(window.toast && msg) window.toast(msg); } catch(_){}
-        resolve();
+  if (
+    window.Capacitor &&
+    window.Capacitor.Plugins &&
+    window.Capacitor.Plugins.Browser
+  ) {
+
+    await window.Capacitor.Plugins.Browser.open({
+      url: data.checkoutUrl
+    });
+
+  } else {
+
+    window.open(data.checkoutUrl, "_blank");
+
+  }
+
+}
       }
       var opts = {
         items: [{ priceId: PADDLE_MONTHLY_PRICE_ID, quantity: 1 }],
@@ -321,35 +317,67 @@
   function attachAndroidResumeHook(){
     if(!isAndroidApp()) return;
     function refreshAll(){
-      refreshLicenseFromServer().catch(function(){});
-      try { if(typeof window.refreshLicenseSilently === "function") window.refreshLicenseSilently(); } catch(_){}
-    }
+      function attachAndroidResumeHook() {
+
+  if (!isAndroidApp()) return;
+
+  function refreshAll() {
+    refreshLicenseFromServer().catch(function(){});
     try {
-      var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
-      if(App && App.addListener){
-        App.addListener("appStateChange", function(state){
-          if(state && state.isActive) refreshAll();
-        });
-        App.addListener("resume", refreshAll);
-        // Deep Link Rückkehr aus Paddle (cavalyra://return oder https://cavalyra.de/return)
-        App.addListener("appUrlOpen", function(data){
-          try {
-            var url = (data && data.url) || "";
-            // Browser-View des Paddle-Checkouts schließen, falls noch offen
-            try { window.Capacitor.Plugins.Browser && window.Capacitor.Plugins.Browser.close && window.Capacitor.Plugins.Browser.close(); } catch(_){}
-            // Nach Rückkehr sofort mehrfach prüfen, bis der Webhook den Status gesetzt hat
-            refreshAll();
-            [1500, 4000, 8000, 15000].forEach(function(ms){ setTimeout(refreshAll, ms); });
-          } catch(_){}
-        });
+      if (typeof window.refreshLicenseSilently === "function") {
+        window.refreshLicenseSilently();
       }
-    } catch(_){}
-    // Zusätzlich beim ersten Start
-    setTimeout(refreshAll, 2000);
+    } catch (_) {}
   }
 
-  // -------------------- Public API --------------------
-  async function checkProStatus(){
+  try {
+
+    var App =
+      window.Capacitor &&
+      window.Capacitor.Plugins &&
+      window.Capacitor.Plugins.App;
+
+    if (App && App.addListener) {
+
+      App.addListener("appStateChange", function(state) {
+        if (state && state.isActive) {
+          refreshAll();
+        }
+      });
+
+      App.addListener("resume", refreshAll);
+
+      App.addListener("appUrlOpen", function() {
+
+        try {
+
+          try {
+            if (
+              window.Capacitor &&
+              window.Capacitor.Plugins &&
+              window.Capacitor.Plugins.Browser
+            ) {
+              window.Capacitor.Plugins.Browser.close();
+            }
+          } catch (_) {}
+
+          refreshAll();
+
+          [1500, 4000, 8000, 15000].forEach(function(ms) {
+            setTimeout(refreshAll, ms);
+          });
+
+        } catch (_) {}
+
+      });
+
+    }
+
+  } catch (_) {}
+
+  setTimeout(refreshAll, 2000);
+
+}
     if(isIosApp()){
       if(!iosBilling.initStarted) initIosBilling();
       var waited = 0;
