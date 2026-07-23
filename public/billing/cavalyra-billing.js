@@ -651,7 +651,7 @@
         id: p.id,
         title: p.title || "Cavalyra Pro",
         description: p.description || "",
-        priceString: pr.price,
+        priceString: "6,99 € / Monat",
         loading: pr.loading,
         owned: !!p.owned
       };
