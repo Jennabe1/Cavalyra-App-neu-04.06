@@ -358,12 +358,13 @@ export type Database = {
           data: Json
           email: string | null
           expires_at: string | null
+          id: string
           installation_id: string | null
           source: string
           status: string
           subscription_id: string | null
           updated_at: string
-          user_id: string
+          user_id: string | null
         }
         Insert: {
           created_at?: string
@@ -371,12 +372,13 @@ export type Database = {
           data?: Json
           email?: string | null
           expires_at?: string | null
+          id?: string
           installation_id?: string | null
           source: string
           status?: string
           subscription_id?: string | null
           updated_at?: string
-          user_id: string
+          user_id?: string | null
         }
         Update: {
           created_at?: string
@@ -384,12 +386,13 @@ export type Database = {
           data?: Json
           email?: string | null
           expires_at?: string | null
+          id?: string
           installation_id?: string | null
           source?: string
           status?: string
           subscription_id?: string | null
           updated_at?: string
-          user_id?: string
+          user_id?: string | null
         }
         Relationships: []
       }

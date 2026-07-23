@@ -1,7 +1,13 @@
-project_id = "wupivwtxperveoyvnphj"
+project_id = "upbubifdcndfxbvmgwzg"
 
 [functions.body-scan-analyze]
 verify_jwt = false
 
 [functions.paddle-webhook]
+verify_jwt = false
+
+[functions.create-paddle-checkout]
+verify_jwt = false
+
+[functions.check-license]
 verify_jwt = false

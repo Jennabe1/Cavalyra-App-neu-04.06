@@ -46,8 +46,31 @@
   // Legacy-Fallback (nur noch für Web-/Desktop-Flows mit E-Mail-Restore relevant)
   var LEGACY_LICENSE_CHECK_URL = "https://cavalyra.de/.netlify/functions/check-license";
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
+  var INSTALLATION_ID_STORAGE = "cavalyra:installation_id";
 
-  // Zugriff auf Supabase-Access-Token aus der CavalyraSync/-Engine-Session
+  // Anonyme Installations-ID (UUID). Erlaubt Kauf/Test ohne Cloud-Konto.
+  function generateUuidV4(){
+    try {
+      if(window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    } catch(_){}
+    var b = new Uint8Array(16);
+    try { (window.crypto || window.msCrypto).getRandomValues(b); }
+    catch(_){ for(var i=0;i<16;i++) b[i] = Math.floor(Math.random()*256); }
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = []; for(var j=0;j<16;j++) h.push(("0"+b[j].toString(16)).slice(-2));
+    return h[0]+h[1]+h[2]+h[3]+"-"+h[4]+h[5]+"-"+h[6]+h[7]+"-"+h[8]+h[9]+"-"+h[10]+h[11]+h[12]+h[13]+h[14]+h[15];
+  }
+  function getInstallationId(){
+    try {
+      var id = localStorage.getItem(INSTALLATION_ID_STORAGE);
+      if(id && /^[0-9a-f-]{32,}$/i.test(id)) return id;
+      id = generateUuidV4();
+      localStorage.setItem(INSTALLATION_ID_STORAGE, id);
+      return id;
+    } catch(_){ return generateUuidV4(); }
+  }
+
+  // Optionaler Zugriff auf Supabase-Access-Token (nur wenn Cloud-Konto aktiv).
   function getSupabaseAccessToken(){
     try {
       var eng = window.CavalyraSync || window.CavalyraSyncEngine;
@@ -72,6 +95,7 @@
     } catch(_){}
     return getSupabaseAccessToken();
   }
+
 
   // -------------------- State-Helper --------------------
   var BILLING_DEBUG_KEY = "cavalyra:billing:debug";
@@ -359,22 +383,26 @@
     try { if(email) localStorage.setItem(LICENSE_EMAIL_STORAGE, email); } catch(_){}
   }
 
-  // Ruft die Supabase-Edge-Function `check-license` mit dem aktuellen JWT auf.
-  // Wird primär auf Android nach dem Paddle-Checkout genutzt.
+  // Ruft die Supabase-Edge-Function `check-license` auf.
+  // Funktioniert ohne Cavalyra-Cloud-Konto: falls kein JWT verfügbar ist,
+  // wird die anonyme installation_id verwendet.
   async function refreshLicenseViaSupabase(){
     var jwt = await ensureFreshSupabaseToken();
-    if(!jwt){
-      return { ok:false, status:"free", reason:"no_session" };
-    }
+    var installationId = getInstallationId();
     try {
-      var res = await fetch(CHECK_LICENSE_URL, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json",
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": "Bearer " + jwt
-        }
-      });
+      var headers = {
+        "Accept": "application/json",
+        "apikey": SUPABASE_ANON_KEY
+      };
+      if(jwt){
+        headers["Authorization"] = "Bearer " + jwt;
+      } else {
+        // Anon-Aufruf braucht trotzdem einen Bearer (Supabase-Gateway) –
+        // der Anon-Key ist dafür vorgesehen.
+        headers["Authorization"] = "Bearer " + SUPABASE_ANON_KEY;
+      }
+      var url = CHECK_LICENSE_URL + "?installation_id=" + encodeURIComponent(installationId);
+      var res = await fetch(url, { method: "GET", headers: headers });
       var data = await res.json().catch(function(){ return null; });
       if(!res.ok || !data || data.ok === false){
         debug("check-license:error", { status:res.status, data:data });
@@ -388,6 +416,7 @@
         subscriptionId: data.subscriptionId || "",
         validUntil: data.expiresAt || "",
         source: data.source || "paddle",
+        installationId: installationId,
         trial: status === "trial" || status === "trialing"
       });
       return { ok:true, status:status, active:isPro };
@@ -396,15 +425,68 @@
     }
   }
 
+  // Restore via E-Mail (Paddle) – für Nutzer ohne Cavalyra-Cloud-Konto.
+  // Fragt `check-license` mit email + installation_id an. Server prüft,
+  // ob eine AKTIVE Pro-Lizenz existiert, hängt die neue installation_id
+  // an die Zeile und antwortet. Bei Erfolg wird Pro sofort freigeschaltet.
+  async function restoreLicenseByEmail(rawEmail){
+    var email = String(rawEmail || "").trim().toLowerCase();
+    if(!email || email.indexOf("@") === -1){
+      throw new Error("Bitte gib eine gültige E-Mail-Adresse ein.");
+    }
+    var installationId = getInstallationId();
+    var headers = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY
+    };
+    var res, data;
+    try {
+      res = await fetch(CHECK_LICENSE_URL, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({ email: email, installation_id: installationId })
+      });
+      data = await res.json().catch(function(){ return null; });
+    } catch(e){
+      throw new Error("Verbindung zum Server fehlgeschlagen. Bitte prüfe deine Internetverbindung.");
+    }
+    if(!data){
+      throw new Error("Unerwartete Serverantwort.");
+    }
+    if(data.ok === false){
+      var msg = data.message || "Für diese E-Mail wurde keine aktive Pro-Lizenz gefunden.";
+      throw new Error(msg);
+    }
+    var status = String(data.status || "free").toLowerCase();
+    var isPro  = status === "pro" || status === "trial" || status === "active" || status === "trialing";
+    if(!isPro){
+      throw new Error("Für diese E-Mail wurde keine aktive Pro-Lizenz gefunden.");
+    }
+    saveKnownEmail(email);
+    applyProState(true, "paddle", {
+      email: email,
+      status: status,
+      customerId: data.customerId || "",
+      subscriptionId: data.subscriptionId || "",
+      validUntil: data.expiresAt || "",
+      source: data.source || "paddle",
+      installationId: installationId,
+      trial: status === "trial" || status === "trialing",
+      restored: true
+    });
+    return { ok:true, status:status, active:true };
+  }
+
   // Legacy-Path (Web / E-Mail-Restore): fragt weiterhin die Netlify-Function ab.
   async function refreshLicenseFromServer(explicitEmail){
-    // Android nutzt ausschließlich den JWT-basierten Supabase-Endpunkt.
+    // Android nutzt ausschließlich den anonymen/JWT-basierten Supabase-Endpunkt.
     if(isAndroidApp() && !explicitEmail){
       return await refreshLicenseViaSupabase();
     }
     var email = (explicitEmail || getKnownEmail() || "").trim().toLowerCase();
     if(!email || email.indexOf("@") === -1){
-      // Als letzter Ausweg dennoch den JWT-Weg versuchen.
       return await refreshLicenseViaSupabase();
     }
     try {
@@ -433,22 +515,45 @@
     }
   }
 
+  // Fragt bei Bedarf nach einer E-Mail-Adresse für den Paddle-Beleg.
+  // Rückgabe leerer String, wenn der Nutzer abbricht (Kauf wird abgebrochen).
+  async function ensureCheckoutEmail(){
+    var known = (getKnownEmail() || "").trim();
+    if(known && known.indexOf("@") > 0) return known;
+    var input = "";
+    try {
+      input = window.prompt(
+        "Bitte gib deine E-Mail-Adresse für den Paddle-Kaufbeleg ein.\n\n" +
+        "Diese Adresse wird ausschließlich für die Zahlungsabwicklung verwendet – " +
+        "ein Cavalyra-Cloud-Konto ist nicht erforderlich.",
+        ""
+      ) || "";
+    } catch(_){}
+    input = input.trim().toLowerCase();
+    if(!input || input.indexOf("@") === -1) return "";
+    saveKnownEmail(input);
+    return input;
+  }
+
   // -------------------- Android Paddle-Checkout (Supabase + Capacitor Browser) --------------------
-  // KEIN window.Paddle, KEIN Overlay, KEIN paddle.js. Ausschließlich:
-  //   1. Supabase Edge Function `create-paddle-checkout` aufrufen
-  //   2. Capacitor Browser.open(url) mit der zurückgegebenen checkout.url
-  //   3. Rückkehr via Deep-Link `cavalyra://return` (siehe attachAndroidResumeHook)
-  //   4. Anschließend `check-license` per JWT (refreshLicenseViaSupabase)
+  // Läuft OHNE Cavalyra-Cloud-Konto. Ablauf:
+  //   1. Anonyme installation_id + E-Mail an `create-paddle-checkout` senden.
+  //   2. Rückgabe `checkoutUrl` in Capacitor Browser öffnen.
+  //   3. Rückkehr via Deep-Link `cavalyra://return` (siehe attachAndroidResumeHook).
+  //   4. Anschließend `check-license?installation_id=...` mehrfach abfragen.
   async function openPaddleCheckout(){
     if(!isAndroidApp()){
       throw new Error("Paddle-Checkout ist nur in der Android-App verfügbar.");
     }
-    var jwt = await ensureFreshSupabaseToken();
-    if(!jwt){
-      throw new Error("Bitte melde dich zuerst mit deinem Cavalyra-Cloud-Konto an, um das Pro-Abo abzuschließen.");
+    var installationId = getInstallationId();
+    var email = await ensureCheckoutEmail();
+    if(!email){
+      throw new Error("Für den Kauf wird eine E-Mail-Adresse für den Paddle-Beleg benötigt.");
     }
-    var email = getKnownEmail();
-    debug("android:create-checkout:start", { hasEmail: !!email });
+    // JWT ist optional – nur mitschicken, falls Cloud-Konto aktiv ist.
+    var jwt = null;
+    try { jwt = await ensureFreshSupabaseToken(); } catch(_){}
+    debug("android:create-checkout:start", { hasEmail:!!email, hasJwt:!!jwt, installationId:installationId });
 
     var res;
     try {
@@ -458,9 +563,12 @@
           "Content-Type": "application/json",
           "Accept": "application/json",
           "apikey": SUPABASE_ANON_KEY,
-          "Authorization": "Bearer " + jwt
+          "Authorization": "Bearer " + (jwt || SUPABASE_ANON_KEY)
         },
-        body: JSON.stringify(email ? { email: email } : {})
+        body: JSON.stringify({
+          installation_id: installationId,
+          email: email
+        })
       });
     } catch(e){
       throw new Error("Checkout konnte nicht gestartet werden (Netzwerkfehler). Bitte prüfe deine Verbindung.");
@@ -492,6 +600,8 @@
     });
     try { if(window.toast) window.toast("Nach Abschluss des Kaufs bitte zur App zurückkehren."); } catch(_){}
   }
+
+
 
 
   // Auto-Refresh nach Rückkehr in die App (Paddle-Kauf beendet)
@@ -725,6 +835,7 @@
     restorePurchases: restorePurchases,
     refreshLicenseFromServer: refreshLicenseFromServer,
     refreshLicenseViaSupabase: refreshLicenseViaSupabase,
+    restoreLicenseByEmail: restoreLicenseByEmail,
     saveKnownEmail: saveKnownEmail,
     getProductInfo: getProductInfo
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
@@ -787,13 +898,14 @@
     if(btn){ btn.disabled = true; btn.textContent = "Wird geprüft…"; }
     try {
       if(isAndroid()){
-        // Auf Android E-Mail-Prompt anzeigen, wenn keine bekannt ist
+        // E-Mail-Restore via Supabase check-license (email + installation_id).
+        // Server prüft aktive Pro-Lizenz und hängt die neue installation_id an.
         var known = "";
         try { known = localStorage.getItem("cavalyra:license:email") || ""; } catch(_){}
-        var email = known || window.prompt("E-Mail-Adresse deines Paddle-Kaufs:", "");
+        var email = window.prompt("E-Mail-Adresse deines Paddle-Kaufs:", known || "");
         if(!email){ if(btn){ btn.disabled=false; btn.textContent="Käufe wiederherstellen"; } return false; }
-        var r = await window.CavalyraBilling.refreshLicenseFromServer(email);
-        if(window.toast) window.toast(r.active ? "Pro-Abo gefunden und freigeschaltet." : "Kein aktives Pro-Abo für diese E-Mail gefunden.");
+        await window.CavalyraBilling.restoreLicenseByEmail(email);
+        if(window.toast) window.toast("Pro-Abo gefunden und freigeschaltet.");
       } else {
         var ok = await window.CavalyraBilling.restorePurchases();
         if(window.toast) window.toast(ok ? "Pro-Abo gefunden und freigeschaltet." : "Kein aktives Pro-Abo gefunden.");

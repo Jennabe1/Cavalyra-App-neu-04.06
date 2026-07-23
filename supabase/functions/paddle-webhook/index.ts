@@ -144,7 +144,7 @@ Deno.serve(async (req) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Zuordnung: subscription_id + custom_data
+  // Zuordnung: user_id (Cloud-Konto) ODER installation_id (anonymer Offline-Kauf).
   const isSubscriptionEvent = eventType.startsWith("subscription.");
   const isTransactionEvent = eventType === "transaction.completed";
 
@@ -153,32 +153,33 @@ Deno.serve(async (req) => {
   const customerId: string | null = data.customer_id || null;
   const customData = (data.custom_data ?? {}) as Record<string, unknown>;
 
-  let userId = typeof customData.user_id === "string" ? customData.user_id : null;
+  let userId = typeof customData.user_id === "string" && customData.user_id ? customData.user_id : null;
+  let installationId = typeof customData.installation_id === "string" && customData.installation_id
+    ? customData.installation_id
+    : null;
   let email = typeof customData.email === "string" ? customData.email : null;
 
-  // Fallback: user_id via bestehende Lizenz per subscription_id oder customer_id auflösen.
-  if (!userId && (subscriptionId || customerId)) {
-    let query = supabase.from("licenses").select("user_id,email").limit(1);
+  // Fallback: bestehende Lizenz per subscription_id / customer_id auflösen.
+  if (!userId && !installationId && (subscriptionId || customerId)) {
+    let query = supabase.from("licenses").select("user_id,installation_id,email").limit(1);
     if (subscriptionId) query = query.eq("subscription_id", subscriptionId);
     else if (customerId) query = query.eq("customer_id", customerId);
     const { data: existing, error: lookupErr } = await query.maybeSingle();
-    if (lookupErr) {
-      console.error("[paddle-webhook] lookup error", lookupErr);
-    }
-    if (existing?.user_id) {
-      userId = existing.user_id as string;
+    if (lookupErr) console.error("[paddle-webhook] lookup error", lookupErr);
+    if (existing) {
+      if (existing.user_id) userId = existing.user_id as string;
+      if (existing.installation_id) installationId = existing.installation_id as string;
       if (!email && existing.email) email = existing.email as string;
     }
   }
 
-  if (!userId) {
-    console.warn("[paddle-webhook] no user_id resolvable", {
+  if (!userId && !installationId) {
+    console.warn("[paddle-webhook] no identifier resolvable", {
       event_type: eventType,
       subscription_id: subscriptionId,
       customer_id: customerId,
     });
-    // 200, damit Paddle nicht endlos retryt – Event wurde akzeptiert, aber nicht zugeordnet.
-    return json(200, { received: true, handled: false, reason: "no_user_id" });
+    return json(200, { received: true, handled: false, reason: "no_identifier" });
   }
 
   // Status + expires_at bestimmen.
@@ -198,59 +199,69 @@ Deno.serve(async (req) => {
       expiresAt = data.canceled_at || endsAt;
     }
   } else if (isTransactionEvent) {
-    // Einmalige Bestätigung eines abgeschlossenen Kaufs.
     status = "pro";
     expiresAt = data.billed_at || null;
-    // Wenn zur Transaktion eine Subscription existiert, kann sie das Ende präziser liefern –
-    // die subscription.* Events überschreiben das ohnehin.
   }
 
-  const row: LicenseUpsert = {
+  // Bestehende Zeile finden (user_id bevorzugt, sonst installation_id).
+  let existingRow: any = null;
+  if (userId) {
+    const { data: r } = await supabase
+      .from("licenses")
+      .select("id,email,customer_id,subscription_id,installation_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    existingRow = r;
+  }
+  if (!existingRow && installationId) {
+    const { data: r } = await supabase
+      .from("licenses")
+      .select("id,email,customer_id,subscription_id,installation_id,user_id")
+      .eq("installation_id", installationId)
+      .maybeSingle();
+    existingRow = r;
+  }
+
+  const row: any = {
     user_id: userId,
+    installation_id: installationId,
     status,
     expires_at: expiresAt,
     customer_id: customerId,
     subscription_id: subscriptionId,
-    email: email,
+    email,
     source: "paddle",
     data: payload,
+    updated_at: new Date().toISOString(),
   };
 
-  // Idempotenz: user_id ist PK. Wir mergen manuell, damit spätere Events ohne custom_data
-  // keine Felder mit NULL überschreiben.
-  const { data: current, error: curErr } = await supabase
-    .from("licenses")
-    .select("email,customer_id,subscription_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (curErr) console.error("[paddle-webhook] current fetch error", curErr);
+  if (existingRow) {
+    if (!row.email && existingRow.email) row.email = existingRow.email;
+    if (!row.customer_id && existingRow.customer_id) row.customer_id = existingRow.customer_id;
+    if (!row.subscription_id && existingRow.subscription_id) row.subscription_id = existingRow.subscription_id;
+    if (!row.user_id && existingRow.user_id) row.user_id = existingRow.user_id;
+    if (!row.installation_id && existingRow.installation_id) row.installation_id = existingRow.installation_id;
 
-  if (current) {
-    if (!row.email && current.email) row.email = current.email as string;
-    if (!row.customer_id && current.customer_id) row.customer_id = current.customer_id as string;
-    if (!row.subscription_id && current.subscription_id) {
-      row.subscription_id = current.subscription_id as string;
+    const { error: updErr } = await supabase
+      .from("licenses")
+      .update(row)
+      .eq("id", existingRow.id);
+    if (updErr) {
+      console.error("[paddle-webhook] update error", updErr);
+      return json(500, { error: "db_update_failed" });
     }
-  }
-
-  const { error: upsertErr } = await supabase
-    .from("licenses")
-    .upsert(
-      {
-        ...row,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id" },
-    );
-
-  if (upsertErr) {
-    console.error("[paddle-webhook] upsert error", upsertErr);
-    return json(500, { error: "db_upsert_failed" });
+  } else {
+    const { error: insErr } = await supabase.from("licenses").insert(row);
+    if (insErr) {
+      console.error("[paddle-webhook] insert error", insErr);
+      return json(500, { error: "db_insert_failed" });
+    }
   }
 
   console.log("[paddle-webhook] applied", {
     event_type: eventType,
     user_id: userId,
+    installation_id: installationId,
     status,
     subscription_id: subscriptionId,
     expires_at: expiresAt,
