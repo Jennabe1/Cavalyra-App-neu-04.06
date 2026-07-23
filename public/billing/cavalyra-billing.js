@@ -3,14 +3,17 @@
    -------------------------------------------------------------------------
    Web     -> Paddle (unverändert, via index.html Legacy-Flow)
    iOS     -> Apple StoreKit (cordova-plugin-purchase v13 / CdvPurchase)
-   Android -> Paddle Web-Checkout (Capacitor Browser Plugin) + serverseitige
-              Lizenzprüfung über /.netlify/functions/check-license.
-              KEIN Google Play Billing – die APK wird direkt über die Website
-              (cavalyra.com) verteilt und ist damit unabhängig vom Play Store.
+   Android -> Supabase Edge Function `create-paddle-checkout` erzeugt eine
+              Paddle-Transaction; die zurückgegebene checkout.url wird
+              ausschließlich über den Capacitor `Browser`-Plugin geöffnet
+              (KEIN window.Paddle.Checkout.open / kein WebView-Overlay).
+              Rückkehr in die App via Deep-Link `cavalyra://return`.
+              Nach der Rückkehr wird der Pro-Status über die
+              Supabase-Edge-Function `check-license` (JWT) neu geladen.
 
    Produkt-IDs:
      - iOS (App Store): de.cavalyra.app.pro.monthly
-     - Android:         nicht mehr relevant, Paddle verwaltet Abo serverseitig.
+     - Android:         Paddle Price ID pri_01ksnccs23fwwm0qctdydb93xz
    ========================================================================= */
 (function(){
   "use strict";
@@ -31,20 +34,44 @@
   // -------------------- Konstanten --------------------
   var PRODUCT_ID_IOS = "de.cavalyra.app.pro.monthly";
 
-  // Paddle Web-Checkout (Android)
-  // Direkter Paddle-Checkout ohne Umweg über die Website.
-  // Wenn PADDLE_CLIENT_TOKEN gesetzt ist, öffnet die App Paddle.Checkout
-  // direkt in einem eingebetteten Overlay. Ansonsten wird als Fallback
-  // die bestehende Paddle-Preisseite genutzt.
-  // Token wird ausschließlich aus /config/cavalyra-config.js gelesen.
-  // Er darf NICHT fest im Quellcode hinterlegt sein.
-  function getPaddleToken(){ return (window.CAVALYRA_PADDLE_CLIENT_TOKEN || "").trim(); }
-  function getPaddleEnv(){ return (window.CAVALYRA_PADDLE_ENV || "production").trim(); }
+  // Paddle Mobile-Checkout (Android) – ausschließlich über Supabase-Edge-Function
+  // + Capacitor Browser Plugin. window.Paddle wird auf Android NICHT mehr geladen.
   var PADDLE_MONTHLY_PRICE_ID = "pri_01ksnccs23fwwm0qctdydb93xz";
-  // Grobe Form-Prüfung: Paddle-Client-Tokens beginnen mit "live_" oder "test_".
-  function isValidPaddleToken(t){ return /^(live|test)_[A-Za-z0-9_\-]{10,}$/.test(t || ""); }
-  var LICENSE_CHECK_URL   = "https://cavalyra.de/.netlify/functions/check-license";
+
+  // Supabase / Lovable Cloud
+  var SUPABASE_URL = "https://upbubifdcndfxbvmgwzg.supabase.co";
+  var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc";
+  var CREATE_CHECKOUT_URL = SUPABASE_URL + "/functions/v1/create-paddle-checkout";
+  var CHECK_LICENSE_URL   = SUPABASE_URL + "/functions/v1/check-license";
+  // Legacy-Fallback (nur noch für Web-/Desktop-Flows mit E-Mail-Restore relevant)
+  var LEGACY_LICENSE_CHECK_URL = "https://cavalyra.de/.netlify/functions/check-license";
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
+
+  // Zugriff auf Supabase-Access-Token aus der CavalyraSync/-Engine-Session
+  function getSupabaseAccessToken(){
+    try {
+      var eng = window.CavalyraSync || window.CavalyraSyncEngine;
+      var tok = eng && eng._auth && typeof eng._auth.token === "function" ? eng._auth.token() : null;
+      if(tok) return tok;
+    } catch(_){}
+    try {
+      var raw = localStorage.getItem("cavalyra_sb_session_v2");
+      if(raw){
+        var s = JSON.parse(raw);
+        if(s && s.access_token) return s.access_token;
+      }
+    } catch(_){}
+    return null;
+  }
+  async function ensureFreshSupabaseToken(){
+    try {
+      var eng = window.CavalyraSync || window.CavalyraSyncEngine;
+      if(eng && eng._auth && typeof eng._auth.ensureFresh === "function"){
+        await eng._auth.ensureFresh();
+      }
+    } catch(_){}
+    return getSupabaseAccessToken();
+  }
 
   // -------------------- State-Helper --------------------
   var BILLING_DEBUG_KEY = "cavalyra:billing:debug";
@@ -332,13 +359,56 @@
     try { if(email) localStorage.setItem(LICENSE_EMAIL_STORAGE, email); } catch(_){}
   }
 
-  async function refreshLicenseFromServer(explicitEmail){
-    var email = (explicitEmail || getKnownEmail() || "").trim().toLowerCase();
-    if(!email || email.indexOf("@") === -1){
-      return { ok:false, status:"free", reason:"no_email" };
+  // Ruft die Supabase-Edge-Function `check-license` mit dem aktuellen JWT auf.
+  // Wird primär auf Android nach dem Paddle-Checkout genutzt.
+  async function refreshLicenseViaSupabase(){
+    var jwt = await ensureFreshSupabaseToken();
+    if(!jwt){
+      return { ok:false, status:"free", reason:"no_session" };
     }
     try {
-      var res = await fetch(LICENSE_CHECK_URL + "?email=" + encodeURIComponent(email), {
+      var res = await fetch(CHECK_LICENSE_URL, {
+        method: "GET",
+        headers: {
+          "Accept": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": "Bearer " + jwt
+        }
+      });
+      var data = await res.json().catch(function(){ return null; });
+      if(!res.ok || !data || data.ok === false){
+        debug("check-license:error", { status:res.status, data:data });
+        return { ok:false, status:"free", reason:"network" };
+      }
+      var status = String(data.status || "free").toLowerCase();
+      var isPro  = status === "pro" || status === "trial" || status === "active" || status === "trialing";
+      applyProState(isPro, "paddle", {
+        status: status,
+        customerId: data.customerId || "",
+        subscriptionId: data.subscriptionId || "",
+        validUntil: data.expiresAt || "",
+        source: data.source || "paddle",
+        trial: status === "trial" || status === "trialing"
+      });
+      return { ok:true, status:status, active:isPro };
+    } catch(e){
+      return { ok:false, status:"free", reason:"exception", message:e && e.message };
+    }
+  }
+
+  // Legacy-Path (Web / E-Mail-Restore): fragt weiterhin die Netlify-Function ab.
+  async function refreshLicenseFromServer(explicitEmail){
+    // Android nutzt ausschließlich den JWT-basierten Supabase-Endpunkt.
+    if(isAndroidApp() && !explicitEmail){
+      return await refreshLicenseViaSupabase();
+    }
+    var email = (explicitEmail || getKnownEmail() || "").trim().toLowerCase();
+    if(!email || email.indexOf("@") === -1){
+      // Als letzter Ausweg dennoch den JWT-Weg versuchen.
+      return await refreshLicenseViaSupabase();
+    }
+    try {
+      var res = await fetch(LEGACY_LICENSE_CHECK_URL + "?email=" + encodeURIComponent(email), {
         method:"GET",
         headers:{ "Accept":"application/json" }
       });
@@ -357,113 +427,78 @@
         validUntil: data.validUntil || "",
         trial: status === "trial"
       });
-      // Serverseitige Lizenz-Speicherung: an cloud-sync andocken, falls verfügbar.
-      try {
-        if(window.CavalyraSyncEngine && typeof window.CavalyraSyncEngine.recordLicense === "function"){
-          window.CavalyraSyncEngine.recordLicense({
-            email: email,
-            paddle_customer_id: data.customerId || null,
-            status: status,
-            plan: data.plan || "pro",
-            valid_until: data.validUntil || null,
-            purchased_at: data.purchasedAt || null,
-            trial: status === "trial"
-          });
-        }
-      } catch(_){}
       return { ok:true, status:status, active:isPro };
     } catch(e){
       return { ok:false, status:"free", reason:"exception", message:e && e.message };
     }
   }
 
-  // Paddle.js dynamisch laden und einmalig initialisieren
-  var paddleJsPromise = null;
-  function loadPaddleJs(){
-    if(paddleJsPromise) return paddleJsPromise;
-    paddleJsPromise = new Promise(function(resolve, reject){
-      if(window.Paddle) return resolve(window.Paddle);
-      var s = document.createElement("script");
-      s.src = "https://cdn.paddle.com/paddle/v2/paddle.js";
-      s.async = true;
-      s.onload = function(){
-        try {
-          var token = getPaddleToken();
-          if(getPaddleEnv() === "sandbox" && window.Paddle && window.Paddle.Environment) {
-            window.Paddle.Environment.set("sandbox");
-          }
-          if(window.Paddle && window.Paddle.Initialize){
-            window.Paddle.Initialize({ token: token });
-          }
-          resolve(window.Paddle);
-        } catch(e){ reject(e); }
-      };
-      s.onerror = function(){
-        paddleJsPromise = null;
-        reject(new Error("Paddle-Checkout konnte nicht geladen werden. Bitte prüfe deine Internetverbindung und versuche es erneut."));
-      };
-      document.head.appendChild(s);
-    });
-    return paddleJsPromise;
-  }
-
+  // -------------------- Android Paddle-Checkout (Supabase + Capacitor Browser) --------------------
+  // KEIN window.Paddle, KEIN Overlay, KEIN paddle.js. Ausschließlich:
+  //   1. Supabase Edge Function `create-paddle-checkout` aufrufen
+  //   2. Capacitor Browser.open(url) mit der zurückgegebenen checkout.url
+  //   3. Rückkehr via Deep-Link `cavalyra://return` (siehe attachAndroidResumeHook)
+  //   4. Anschließend `check-license` per JWT (refreshLicenseViaSupabase)
   async function openPaddleCheckout(){
-    var token = getPaddleToken();
-    if(!token){
-      throw new Error("Paddle ist derzeit nicht konfiguriert. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
+    if(!isAndroidApp()){
+      throw new Error("Paddle-Checkout ist nur in der Android-App verfügbar.");
     }
-    if(!isValidPaddleToken(token)){
-      throw new Error("Der hinterlegte Paddle-Zugang ist ungültig. Der Kauf ist momentan nicht möglich – bitte kontaktiere den Support unter kontakt@cavalyra.de.");
+    var jwt = await ensureFreshSupabaseToken();
+    if(!jwt){
+      throw new Error("Bitte melde dich zuerst mit deinem Cavalyra-Cloud-Konto an, um das Pro-Abo abzuschließen.");
     }
     var email = getKnownEmail();
-    await loadPaddleJs();
-    if(!(window.Paddle && window.Paddle.Checkout && window.Paddle.Checkout.open)){
-      throw new Error("Paddle-Checkout konnte nicht gestartet werden. Bitte versuche es später erneut.");
+    debug("android:create-checkout:start", { hasEmail: !!email });
+
+    var res;
+    try {
+      res = await fetch(CREATE_CHECKOUT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": "Bearer " + jwt
+        },
+        body: JSON.stringify(email ? { email: email } : {})
+      });
+    } catch(e){
+      throw new Error("Checkout konnte nicht gestartet werden (Netzwerkfehler). Bitte prüfe deine Verbindung.");
     }
-    return await new Promise(function(resolve, reject){
-      var settled = false;
-      function done(msg){
-        if(settled) return; settled = true;
-        try { if(window.toast && msg) window.toast(msg); } catch(_){}
-        resolve();
-      }
-      var opts = {
-        items: [{ priceId: PADDLE_MONTHLY_PRICE_ID, quantity: 1 }],
-        settings: {
-          displayMode: "overlay",
-          theme: "light",
-          locale: "de",
-          allowLogout: false
-        },
-        successCallback: function(){
-          refreshLicenseFromServer(email).catch(function(){});
-          [1500, 4000, 8000, 15000].forEach(function(ms){
-            setTimeout(function(){ refreshLicenseFromServer(email).catch(function(){}); }, ms);
-          });
-          done("Kauf abgeschlossen – Pro wird gleich freigeschaltet.");
-        },
-        closeCallback: function(){
-          // Nutzer hat den Checkout geschlossen bzw. abgebrochen.
-          // Sicherheitshalber trotzdem einmal Lizenzstatus prüfen.
-          refreshLicenseFromServer(email).catch(function(){});
-          done("Checkout geschlossen. Kein Kauf abgeschlossen.");
-        }
-      };
-      if(email) opts.customer = { email: email };
-      try {
-        window.Paddle.Checkout.open(opts);
-      } catch(e){
-        settled = true;
-        reject(new Error("Paddle-Checkout konnte nicht geöffnet werden: " + (e && e.message ? e.message : "Unbekannter Fehler")));
-      }
+    var data = await res.json().catch(function(){ return null; });
+    if(!res.ok || !data || !data.checkoutUrl){
+      debug("android:create-checkout:error", { status:res.status, data:data });
+      var msg = (data && (data.error || data.message)) || ("HTTP " + res.status);
+      throw new Error("Checkout konnte nicht gestartet werden: " + msg);
+    }
+    var checkoutUrl = data.checkoutUrl;
+    debug("android:create-checkout:ok", { transactionId: data.transactionId || null });
+
+    var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+    if(!Browser || typeof Browser.open !== "function"){
+      throw new Error("Capacitor Browser Plugin ist nicht verfügbar.");
+    }
+    try {
+      await Browser.open({ url: checkoutUrl, presentationStyle: "fullscreen" });
+    } catch(e){
+      throw new Error("Checkout konnte nicht geöffnet werden: " + (e && e.message ? e.message : "Unbekannter Fehler"));
+    }
+
+    // Lizenzstatus nach der Rückkehr mehrfach prüfen (der Paddle-Webhook
+    // schreibt asynchron in die `licenses`-Tabelle).
+    refreshLicenseViaSupabase().catch(function(){});
+    [2000, 5000, 10000, 20000].forEach(function(ms){
+      setTimeout(function(){ refreshLicenseViaSupabase().catch(function(){}); }, ms);
     });
+    try { if(window.toast) window.toast("Nach Abschluss des Kaufs bitte zur App zurückkehren."); } catch(_){}
   }
+
 
   // Auto-Refresh nach Rückkehr in die App (Paddle-Kauf beendet)
   function attachAndroidResumeHook(){
     if(!isAndroidApp()) return;
     function refreshAll(){
-      refreshLicenseFromServer().catch(function(){});
+      refreshLicenseViaSupabase().catch(function(){});
       try { if(typeof window.refreshLicenseSilently === "function") window.refreshLicenseSilently(); } catch(_){}
     }
     try {
@@ -689,6 +724,7 @@
     startProPurchase: startProPurchase,
     restorePurchases: restorePurchases,
     refreshLicenseFromServer: refreshLicenseFromServer,
+    refreshLicenseViaSupabase: refreshLicenseViaSupabase,
     saveKnownEmail: saveKnownEmail,
     getProductInfo: getProductInfo
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
