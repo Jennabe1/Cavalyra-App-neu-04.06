@@ -354,28 +354,40 @@ export type Database = {
       licenses: {
         Row: {
           created_at: string
+          customer_id: string | null
           data: Json
+          email: string | null
           expires_at: string | null
+          installation_id: string | null
           source: string
           status: string
+          subscription_id: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
           created_at?: string
+          customer_id?: string | null
           data?: Json
+          email?: string | null
           expires_at?: string | null
+          installation_id?: string | null
           source: string
           status?: string
+          subscription_id?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
           created_at?: string
+          customer_id?: string | null
           data?: Json
+          email?: string | null
           expires_at?: string | null
+          installation_id?: string | null
           source?: string
           status?: string
+          subscription_id?: string | null
           updated_at?: string
           user_id?: string
         }
