@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
-  const apiKey = Deno.env.get("PADDLE_API_KEY");
+  const apiKey = Deno.env.get("PADDLE_API_KEY")?.trim();
   if (!apiKey) return json(500, { error: "paddle_api_key_missing" });
 
   let body: Record<string, unknown> = {};
@@ -85,8 +85,10 @@ Deno.serve(async (req) => {
   const res = await fetch(`${PADDLE_API_BASE}/transactions`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  "Authorization": `Bearer ${apiKey}`,
+  "Content-Type": "application/json",
+  "Accept": "application/json",
+  "Paddle-Version": "1",
     },
     body: JSON.stringify(payload),
   });
