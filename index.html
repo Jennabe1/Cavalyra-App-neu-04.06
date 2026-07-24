@@ -2812,6 +2812,20 @@ function openCavalyraCustomerPortal(){
   return false;
 }
 
+/**
+ * Zentrale Funktion für alle "Pro freischalten"-Buttons.
+ * Wird auf Android/iOS von public/billing/cavalyra-billing.js überschrieben,
+ * damit dort openProWebsite() den Capacitor Browser mit cavalyra.de/pro öffnet
+ * (Android) bzw. den StoreKit-Kauf startet (iOS). Auf Web bleibt der Fallback:
+ * Navigation zum internen Pro-Tab.
+ */
+if(typeof window.openProWebsite !== "function"){
+  window.openProWebsite = function(){
+    try { navigate("pro"); } catch(_){}
+    return false;
+  };
+}
+
 function requireProAccess(featureName){
   if(hasProAccess()) return true;
   toast((featureName || "Diese Funktion") + " ist Teil von Cavalyra Pro.");
@@ -2820,7 +2834,7 @@ function requireProAccess(featureName){
 }
 
 function proLock(title,text){
-  return `<div class="pro-lock"><h3>${esc(title)} <span class="pro-chip">Pro</span></h3><p>${esc(text)}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">Pro-Status prüfen</button><button class="btn secondary" onclick="return openCavalyraPricing()">Pro freischalten</button></div></div>`;
+  return `<div class="pro-lock"><h3>${esc(title)} <span class="pro-chip">Pro</span></h3><p>${esc(text)}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="return openProWebsite()">Pro freischalten</button></div></div>`;
 }
 
 
@@ -3210,7 +3224,7 @@ function timelineItems(){
   return items.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).slice(0,12);
 }
 function proOnlyBox(title, text){
-  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="navigate('pro')">Kostenlos testen</button><button class="btn secondary" onclick="navigate('pro')">Pro freischalten</button></div></div>`;
+  return `<div class="pro-lock"><h3>${title} <span class="pro-chip">Pro</span></h3><p>${text}</p><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><button class="btn" onclick="return openProWebsite()">Pro freischalten</button></div></div>`;
 }
 
 
@@ -5134,7 +5148,7 @@ function renderProfile(){
     <div class="grid grid-2 section">
       <div class="card">
         <div class="profile-head"><img class="avatar" src="${ICON}" alt="Cavalyra Icon"><div><h2>Cavalyra Profil</h2><p>Lokales Profil auf diesem Gerät</p></div></div>
-        <div class="status-card">${statusHTML}<ul><li>Alle Kurse</li><li>Cavalyra Body Scanner</li><li>Premium-Inhalte</li></ul><button class="btn secondary section" onclick="navigate('pro')">Pro freischalten</button></div>
+        <div class="status-card">${statusHTML}<ul><li>Alle Kurse</li><li>Cavalyra Body Scanner</li><li>Premium-Inhalte</li></ul><button class="btn secondary section" onclick="return openProWebsite()">Pro freischalten</button></div>
       </div>
       <div class="card">
         <h2>Meine Pferde</h2>

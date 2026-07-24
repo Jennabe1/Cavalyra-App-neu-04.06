@@ -3,17 +3,18 @@
    -------------------------------------------------------------------------
    Web     -> Paddle (unverändert, via index.html Legacy-Flow)
    iOS     -> Apple StoreKit (cordova-plugin-purchase v13 / CdvPurchase)
-   Android -> Supabase Edge Function `create-paddle-checkout` erzeugt eine
-              Paddle-Transaction; die zurückgegebene checkout.url wird
-              ausschließlich über den Capacitor `Browser`-Plugin geöffnet
-              (KEIN window.Paddle.Checkout.open / kein WebView-Overlay).
-              Rückkehr in die App via Deep-Link `cavalyra://return`.
-              Nach der Rückkehr wird der Pro-Status über die
-              Supabase-Edge-Function `check-license` (JWT) neu geladen.
+   Android -> KEINE In-App-Zahlungslogik mehr. Sämtliche Kauf-, Preis- und
+              Zahlungslogik läuft ausschließlich über die Website
+              https://cavalyra.de/pro. Die App öffnet diese Seite über den
+              Capacitor Browser (`openProWebsite()`) und prüft nach der
+              Rückkehr den Lizenzstatus über die Supabase-Edge-Function
+              `check-license?installation_id=…`.
+
+   Zentrale Funktion für Android-Kauf-Entry: `window.openProWebsite()`.
+   Keine andere Stelle im Code darf die Checkout-URL selbst zusammensetzen.
 
    Produkt-IDs:
      - iOS (App Store): de.cavalyra.app.pro.monthly
-     - Android:         Paddle Price ID pri_01ksnccs23fwwm0qctdydb93xz
    ========================================================================= */
 (function(){
   "use strict";
@@ -34,21 +35,27 @@
   // -------------------- Konstanten --------------------
   var PRODUCT_ID_IOS = "de.cavalyra.app.pro.monthly";
 
-  // Paddle Mobile-Checkout (Android) – ausschließlich über Supabase-Edge-Function
-  // + Capacitor Browser Plugin. window.Paddle wird auf Android NICHT mehr geladen.
-  var PADDLE_MONTHLY_PRICE_ID = "pri_01ksnccs23fwwm0qctdydb93xz";
+  // Zentrale Website-URL für die Pro-Freischaltung (Android).
+  // WICHTIG: Dies ist die EINZIGE Stelle im Code, an der die Kauf-URL
+  // definiert wird. Änderungen an Preisen, Testphasen, Gutscheinen etc.
+  // erfolgen ausschließlich auf https://cavalyra.de/pro.
+  var PRO_WEBSITE_URL = "https://cavalyra.de/pro";
 
-  // Supabase / Lovable Cloud
+  // Supabase / Lovable Cloud – ausschließlich für die Lizenzprüfung.
   var SUPABASE_URL = "https://upbubifdcndfxbvmgwzg.supabase.co";
   var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc";
-  var CREATE_CHECKOUT_URL = SUPABASE_URL + "/functions/v1/create-paddle-checkout";
   var CHECK_LICENSE_URL   = SUPABASE_URL + "/functions/v1/check-license";
-  // Legacy-Fallback (nur noch für Web-/Desktop-Flows mit E-Mail-Restore relevant)
   var LEGACY_LICENSE_CHECK_URL = "https://cavalyra.de/.netlify/functions/check-license";
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
   var INSTALLATION_ID_STORAGE = "cavalyra:installation_id";
+  var INSTALLATION_ID_PREF_KEY = "cavalyra_installation_id";
 
-  // Anonyme Installations-ID (UUID). Erlaubt Kauf/Test ohne Cloud-Konto.
+  // -------------------- Installation-ID (UUID v4, Capacitor Preferences) --------------------
+  // Die installation_id wird beim ersten Start dauerhaft erzeugt und über
+  // Capacitor Preferences (App-Neuinstallation = neue ID) persistiert.
+  // Diese ID ist die einzige Kennung, die zusammen mit der Website an
+  // https://cavalyra.de/pro übergeben wird, damit ein späterer Paddle-Kauf
+  // wieder dem Gerät zugeordnet werden kann.
   function generateUuidV4(){
     try {
       if(window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
@@ -60,14 +67,92 @@
     var h = []; for(var j=0;j<16;j++) h.push(("0"+b[j].toString(16)).slice(-2));
     return h[0]+h[1]+h[2]+h[3]+"-"+h[4]+h[5]+"-"+h[6]+h[7]+"-"+h[8]+h[9]+"-"+h[10]+h[11]+h[12]+h[13]+h[14]+h[15];
   }
-  function getInstallationId(){
+  function _prefsPlugin(){
+    try { return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Preferences) || null; }
+    catch(_){ return null; }
+  }
+  var _installationIdCache = null;
+  async function getInstallationId(){
+    if(_installationIdCache) return _installationIdCache;
+    var Prefs = _prefsPlugin();
+    // 1. Aus Capacitor Preferences lesen
+    if(Prefs && typeof Prefs.get === "function"){
+      try {
+        var r = await Prefs.get({ key: INSTALLATION_ID_PREF_KEY });
+        if(r && r.value && /^[0-9a-f-]{32,}$/i.test(r.value)){
+          _installationIdCache = r.value;
+          try { localStorage.setItem(INSTALLATION_ID_STORAGE, r.value); } catch(_){}
+          return _installationIdCache;
+        }
+      } catch(_){}
+    }
+    // 2. Migration: bestehende ID aus localStorage übernehmen
+    try {
+      var legacy = localStorage.getItem(INSTALLATION_ID_STORAGE);
+      if(legacy && /^[0-9a-f-]{32,}$/i.test(legacy)){
+        _installationIdCache = legacy;
+        if(Prefs && typeof Prefs.set === "function"){
+          try { await Prefs.set({ key: INSTALLATION_ID_PREF_KEY, value: legacy }); } catch(_){}
+        }
+        return _installationIdCache;
+      }
+    } catch(_){}
+    // 3. Neue UUID v4 erzeugen und dauerhaft speichern
+    var fresh = generateUuidV4();
+    _installationIdCache = fresh;
+    try { localStorage.setItem(INSTALLATION_ID_STORAGE, fresh); } catch(_){}
+    if(Prefs && typeof Prefs.set === "function"){
+      try { await Prefs.set({ key: INSTALLATION_ID_PREF_KEY, value: fresh }); } catch(_){}
+    }
+    return fresh;
+  }
+  // Synchroner Best-Effort-Zugriff (nur als Fallback, z. B. für Debug).
+  function getInstallationIdSync(){
+    if(_installationIdCache) return _installationIdCache;
     try {
       var id = localStorage.getItem(INSTALLATION_ID_STORAGE);
-      if(id && /^[0-9a-f-]{32,}$/i.test(id)) return id;
-      id = generateUuidV4();
-      localStorage.setItem(INSTALLATION_ID_STORAGE, id);
-      return id;
-    } catch(_){ return generateUuidV4(); }
+      if(id && /^[0-9a-f-]{32,}$/i.test(id)){ _installationIdCache = id; return id; }
+    } catch(_){}
+    return "";
+  }
+
+  // -------------------- App-Version --------------------
+  async function getAppVersion(){
+    try {
+      var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+      if(App && typeof App.getInfo === "function"){
+        var info = await App.getInfo();
+        // Bevorzugt build (Android versionCode / iOS CFBundleVersion),
+        // fällt auf version (versionName) zurück.
+        if(info && (info.build || info.version)) return String(info.build || info.version);
+      }
+    } catch(_){}
+    return "";
+  }
+
+  // -------------------- openProWebsite() --------------------
+  // Zentrale und EINZIGE Funktion zum Starten der Pro-Freischaltung
+  // in der Android-App. Öffnet ausschließlich die Website. Kein Checkout,
+  // keine Paddle-Kommunikation, keine Preislogik im Client.
+  async function openProWebsite(){
+    var installationId = await getInstallationId();
+    var appVersion = await getAppVersion();
+    var params = [
+      "installation_id=" + encodeURIComponent(installationId),
+      "platform=android",
+      "app_version=" + encodeURIComponent(appVersion || ""),
+      "source=app"
+    ].join("&");
+    var url = PRO_WEBSITE_URL + "?" + params;
+    debug("openProWebsite", { url: url });
+    var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+    if(Browser && typeof Browser.open === "function"){
+      try {
+        await Browser.open({ url: url, presentationStyle: "fullscreen" });
+        return;
+      } catch(_){}
+    }
+    try { window.open(url, "_blank", "noopener"); } catch(_){}
   }
 
   // Optionaler Zugriff auf Supabase-Access-Token (nur wenn Cloud-Konto aktiv).
@@ -388,7 +473,7 @@
   // wird die anonyme installation_id verwendet.
   async function refreshLicenseViaSupabase(){
     var jwt = await ensureFreshSupabaseToken();
-    var installationId = getInstallationId();
+    var installationId = await getInstallationId();
     try {
       var headers = {
         "Accept": "application/json",
@@ -434,7 +519,7 @@
     if(!email || email.indexOf("@") === -1){
       throw new Error("Bitte gib eine gültige E-Mail-Adresse ein.");
     }
-    var installationId = getInstallationId();
+    var installationId = await getInstallationId();
     var headers = {
       "Accept": "application/json",
       "Content-Type": "application/json",
@@ -515,91 +600,11 @@
     }
   }
 
-  // Fragt bei Bedarf nach einer E-Mail-Adresse für den Paddle-Beleg.
-  // Rückgabe leerer String, wenn der Nutzer abbricht (Kauf wird abgebrochen).
-  async function ensureCheckoutEmail(){
-    var known = (getKnownEmail() || "").trim();
-    if(known && known.indexOf("@") > 0) return known;
-    var input = "";
-    try {
-      input = window.prompt(
-        "Bitte gib deine E-Mail-Adresse für den Paddle-Kaufbeleg ein.\n\n" +
-        "Diese Adresse wird ausschließlich für die Zahlungsabwicklung verwendet – " +
-        "ein Cavalyra-Cloud-Konto ist nicht erforderlich.",
-        ""
-      ) || "";
-    } catch(_){}
-    input = input.trim().toLowerCase();
-    if(!input || input.indexOf("@") === -1) return "";
-    saveKnownEmail(input);
-    return input;
-  }
+  // Android-Kauf: KEINE In-App-Checkout-Logik mehr. Der Kauf wird vollständig
+  // auf https://cavalyra.de/pro abgewickelt. Die App öffnet die Seite und
+  // aktualisiert nach der Rückkehr den Lizenzstatus über check-license.
 
-  // -------------------- Android Paddle-Checkout (Supabase + Capacitor Browser) --------------------
-  // Läuft OHNE Cavalyra-Cloud-Konto. Ablauf:
-  //   1. Anonyme installation_id + E-Mail an `create-paddle-checkout` senden.
-  //   2. Rückgabe `checkoutUrl` in Capacitor Browser öffnen.
-  //   3. Rückkehr via Deep-Link `cavalyra://return` (siehe attachAndroidResumeHook).
-  //   4. Anschließend `check-license?installation_id=...` mehrfach abfragen.
-  async function openPaddleCheckout(){
-    if(!isAndroidApp()){
-      throw new Error("Paddle-Checkout ist nur in der Android-App verfügbar.");
-    }
-    var installationId = getInstallationId();
-    var email = await ensureCheckoutEmail();
-    if(!email){
-      throw new Error("Für den Kauf wird eine E-Mail-Adresse für den Paddle-Beleg benötigt.");
-    }
-    // JWT ist optional – nur mitschicken, falls Cloud-Konto aktiv ist.
-    var jwt = null;
-    try { jwt = await ensureFreshSupabaseToken(); } catch(_){}
-    debug("android:create-checkout:start", { hasEmail:!!email, hasJwt:!!jwt, installationId:installationId });
 
-    var res;
-    try {
-      res = await fetch(CREATE_CHECKOUT_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": "Bearer " + (jwt || SUPABASE_ANON_KEY)
-        },
-        body: JSON.stringify({
-          installation_id: installationId,
-          email: email
-        })
-      });
-    } catch(e){
-      throw new Error("Checkout konnte nicht gestartet werden (Netzwerkfehler). Bitte prüfe deine Verbindung.");
-    }
-    var data = await res.json().catch(function(){ return null; });
-    if(!res.ok || !data || !data.checkoutUrl){
-      debug("android:create-checkout:error", { status:res.status, data:data });
-      var msg = (data && (data.error || data.message)) || ("HTTP " + res.status);
-      throw new Error("Checkout konnte nicht gestartet werden: " + msg);
-    }
-    var checkoutUrl = data.checkoutUrl;
-    debug("android:create-checkout:ok", { transactionId: data.transactionId || null });
-
-    var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
-    if(!Browser || typeof Browser.open !== "function"){
-      throw new Error("Capacitor Browser Plugin ist nicht verfügbar.");
-    }
-    try {
-      await Browser.open({ url: checkoutUrl, presentationStyle: "fullscreen" });
-    } catch(e){
-      throw new Error("Checkout konnte nicht geöffnet werden: " + (e && e.message ? e.message : "Unbekannter Fehler"));
-    }
-
-    // Lizenzstatus nach der Rückkehr mehrfach prüfen (der Paddle-Webhook
-    // schreibt asynchron in die `licenses`-Tabelle).
-    refreshLicenseViaSupabase().catch(function(){});
-    [2000, 5000, 10000, 20000].forEach(function(ms){
-      setTimeout(function(){ refreshLicenseViaSupabase().catch(function(){}); }, ms);
-    });
-    try { if(window.toast) window.toast("Nach Abschluss des Kaufs bitte zur App zurückkehren."); } catch(_){}
-  }
 
 
 
@@ -662,9 +667,10 @@
   }
 
   async function startProPurchase(){
-    debug("button:kostenlos-testen-pressed", { platform:getPlatform(), before:licenseSnapshot() });
+    debug("button:pro-freischalten-pressed", { platform:getPlatform(), before:licenseSnapshot() });
     if(isAndroidApp()){
-      await openPaddleCheckout();
+      // Android: kompletter Kaufprozess läuft ausschließlich auf der Website.
+      await openProWebsite();
       return true;
     }
     if(!isIosApp()){
@@ -837,7 +843,9 @@
     refreshLicenseViaSupabase: refreshLicenseViaSupabase,
     restoreLicenseByEmail: restoreLicenseByEmail,
     saveKnownEmail: saveKnownEmail,
-    getProductInfo: getProductInfo
+    getProductInfo: getProductInfo,
+    openProWebsite: openProWebsite,
+    getInstallationId: getInstallationId
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
@@ -872,13 +880,36 @@
   function isIos(){ return window.CavalyraBilling && window.CavalyraBilling.isIosApp(); }
   function isAndroid(){ return window.CavalyraBilling && window.CavalyraBilling.isAndroidApp(); }
 
+  // Zentrale, globale Funktion für alle "Pro freischalten"-Buttons.
+  // Auf Android öffnet sie ausschließlich die Website https://cavalyra.de/pro.
+  // Auf iOS bleibt der StoreKit-Kauf aktiv. Im Web navigiert sie zum Pro-Tab.
+  window.openProWebsite = async function(){
+    try {
+      if(isAndroid() && window.CavalyraBilling && typeof window.CavalyraBilling.openProWebsite === "function"){
+        await window.CavalyraBilling.openProWebsite();
+        return false;
+      }
+      if(isIos() && window.CavalyraBilling && typeof window.CavalyraBilling.startProPurchase === "function"){
+        await window.CavalyraBilling.startProPurchase();
+        return false;
+      }
+      // Web / Desktop: einfach zum Pro-Tab wechseln.
+      if(typeof window.navigate === "function"){ window.navigate("pro"); }
+      else { location.hash = "#pro"; }
+    } catch(e){
+      console.error("[openProWebsite]", e);
+      if(window.toast) window.toast(e && e.message ? e.message : "Pro-Seite konnte nicht geöffnet werden.");
+    }
+    return false;
+  };
+
   window.cavalyraNativeBuyPro = async function(){
     var btn = document.getElementById("nativeBuyProBtn");
-    if(btn){ btn.disabled = true; btn.textContent = isAndroid() ? "Öffne Paddle-Checkout…" : "Kauf wird gestartet…"; }
+    if(btn){ btn.disabled = true; btn.textContent = isAndroid() ? "Öffne cavalyra.de/pro…" : "Kauf wird gestartet…"; }
     try {
       var ok = await window.CavalyraBilling.startProPurchase();
       if(isAndroid()){
-        if(window.toast) window.toast("Nach Abschluss des Kaufs bitte zur App zurückkehren.");
+        if(window.toast) window.toast("Bitte den Kauf auf cavalyra.de abschließen und danach zur App zurückkehren.");
       } else {
         if(window.toast) window.toast(ok ? "Kauf bestätigt – Pro ist freigeschaltet." : "Kauf gestartet – Pro wird erst nach App-Store-Bestätigung freigeschaltet.");
       }
@@ -888,7 +919,7 @@
       var msg = document.getElementById("nativeBillingMessage");
       if(msg) msg.textContent = e && e.message ? e.message : "Kauf fehlgeschlagen.";
     } finally {
-      if(btn){ btn.disabled = false; btn.textContent = "Kostenlos testen"; }
+      if(btn){ btn.disabled = false; btn.textContent = "Pro freischalten"; }
     }
     return false;
   };
@@ -951,22 +982,28 @@
     // 0,00-Trial-Preis mit einem falschen Wert überschrieben oder umgekehrt.
     var priceText = priceReady
       ? info.priceString
-      : (isIos() ? "wird geladen …" : "6,99 € / Monat");
+      : (isIos() ? "wird geladen …" : "");
     if(!priceReady && isIos()) schedulePriceRerender();
-    var storeName = isIos() ? "App Store" : "Paddle";
+    var storeName = isIos() ? "App Store" : "cavalyra.de";
     var manageHint = isIos()
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
-      : "Dein Pro-Abo wird sicher über Paddle abgerechnet und kann jederzeit über das Paddle-Kundenportal verwaltet oder gekündigt werden.";
-    var priceLine = priceReady
-      ? '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit über ' + esc(storeName) + ' kündbar.</p>'
-      : '<p class="small"><strong>Kostenlos testen</strong> – Preis wird vom ' + esc(storeName) + ' geladen …</p>';
+      : "Alle Preise, Testphasen und Details findest du auf cavalyra.de/pro. Dort kannst du dein Abo jederzeit abschließen, verwalten oder kündigen.";
 
-    var subscriptionDetails = ''
-      + '<div class="card" style="margin-bottom:12px;">'
-      +   '<h3 style="margin:0 0 8px 0;font-size:20px;">Cavalyra Pro</h3>'
-      +   '<p class="small" style="margin:0 0 6px 0;"><strong>Laufzeit:</strong> 1 Monat</p>'
-      +   '<p class="small" style="margin:0;"><strong>Preis:</strong> ' + esc(priceText) + '</p>'
-      + '</div>';
+    // Preis-/Testzeile: Auf Android wird bewusst KEIN Preis angezeigt –
+    // die vollständige Preislogik liegt ausschließlich auf cavalyra.de/pro.
+    var priceLine = isIos()
+      ? (priceReady
+          ? '<p class="small"><strong>Kostenlos testen</strong> – danach ' + esc(priceText) + '. Verlängert sich automatisch, jederzeit über ' + esc(storeName) + ' kündbar.</p>'
+          : '<p class="small"><strong>Kostenlos testen</strong> – Preis wird vom ' + esc(storeName) + ' geladen …</p>')
+      : '<p class="small">Alle Details, Preise und die kostenlose Testphase findest du auf <strong>cavalyra.de/pro</strong>.</p>';
+
+    var subscriptionDetails = isIos()
+      ? ('<div class="card" style="margin-bottom:12px;">'
+          + '<h3 style="margin:0 0 8px 0;font-size:20px;">Cavalyra Pro</h3>'
+          + '<p class="small" style="margin:0 0 6px 0;"><strong>Laufzeit:</strong> 1 Monat</p>'
+          + '<p class="small" style="margin:0;"><strong>Preis:</strong> ' + esc(priceText) + '</p>'
+          + '</div>')
+      : '';
 
     // Legal-Links (Datenschutz/AGB) sind bereits im Profil-Bereich vorhanden.
     // Auf iOS bleibt nur die Apple-Compliance-Zeile (Privacy Policy + Apple EULA).
@@ -977,9 +1014,13 @@
           + '</div>')
       : '';
 
-    var manageBtn = isAndroid()
-      ? '<button class="btn secondary" onclick="return openCavalyraCustomerPortal()">Abo verwalten</button>'
-      : '';
+    // Buttons:
+    //   iOS      -> StoreKit (unverändert): Kostenlos testen + Käufe wiederherstellen
+    //   Android  -> ausschließlich "Pro freischalten" (öffnet cavalyra.de/pro)
+    var actionButtons = isIos()
+      ? ('<button class="btn" id="nativeBuyProBtn" onclick="return cavalyraNativeBuyPro()">Kostenlos testen</button>'
+          + '<button class="btn secondary" id="nativeRestoreProBtn" onclick="return cavalyraNativeRestore()">Käufe wiederherstellen</button>')
+      : '<button class="btn" id="nativeBuyProBtn" onclick="return openProWebsite()">Pro freischalten</button>';
 
     var html = ''
       + '<div class="hero">'
@@ -999,9 +1040,7 @@
       +     priceLine
       +     legalLinks
       +     '<div class="license-check-actions">'
-      +       '<button class="btn" id="nativeBuyProBtn" onclick="return cavalyraNativeBuyPro()">Kostenlos testen</button>'
-      +       '<button class="btn secondary" id="nativeRestoreProBtn" onclick="return cavalyraNativeRestore()">Käufe wiederherstellen</button>'
-      +       manageBtn
+      +       actionButtons
       +     '</div>'
       +     '<div class="license-check-message" id="nativeBillingMessage">'
       +       esc(manageHint)
@@ -1036,28 +1075,10 @@
         return false;
       };
     } else if(isAndroid()){
-      // Android: Paddle-Portal ist erlaubt und gewünscht
-      window.openCavalyraPricing = function(){
-        try {
-          if(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser){
-            window.Capacitor.Plugins.Browser.open({ url: "https://cavalyra.de/#preise" });
-          } else {
-            window.open("https://cavalyra.de/#preise", "_blank", "noopener");
-          }
-        } catch(_){ window.open("https://cavalyra.de/#preise", "_blank", "noopener"); }
-        return false;
-      };
-      window.openCavalyraCustomerPortal = function(){
-        var url = "https://customer-portal.paddle.com/cpl_01ksj34k26v4xebfvgtnb3xbf9";
-        try {
-          if(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser){
-            window.Capacitor.Plugins.Browser.open({ url: url });
-          } else {
-            window.open(url, "_blank", "noopener");
-          }
-        } catch(_){ window.open(url, "_blank", "noopener"); }
-        return false;
-      };
+      // Android: sämtliche Preis-/Portal-/Kauf-Links führen ausschließlich
+      // auf cavalyra.de/pro. Keine Paddle-Kommunikation mehr im Client.
+      window.openCavalyraPricing = function(){ return window.openProWebsite(); };
+      window.openCavalyraCustomerPortal = function(){ return window.openProWebsite(); };
     }
 
     setTimeout(function(){
