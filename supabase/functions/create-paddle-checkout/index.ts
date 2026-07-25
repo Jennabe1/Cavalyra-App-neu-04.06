@@ -24,12 +24,11 @@ function sanitizeString(value: unknown): string {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+const rawApiKey = Deno.env.get("PADDLE_API_KEY");
+if (!rawApiKey) return json(500, { error: "paddle_api_key_missing" });
 
-  const rawApiKey = Deno.env.get("PADDLE_API_KEY");
-  if (!rawApiKey) return json(500, { error: "paddle_api_key_missing" });
-
-  let apiKey = rawApiKey.trim();
-  if (/^["'].*["']$/.test(apiKey)) apiKey = apiKey.slice(1, -1).trim();
+let apiKey = rawApiKey.trim();
+if (/^["'].*["']$/.test(apiKey)) apiKey = apiKey.slice(1, -1).trim();
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch (_) { body = {}; }
