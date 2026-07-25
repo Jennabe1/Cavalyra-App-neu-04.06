@@ -1,9 +1,5 @@
-// Cavalyra – Paddle Mobile Checkout (Android)
+// Cavalyra – Paddle Checkout (Android / Webflow / Web)
 // Erstellt serverseitig eine Paddle Transaction und gibt die checkout.url zurück.
-// Läuft ohne Cavalyra-Cloud-Konto: der Client identifiziert sich über eine
-// lokal erzeugte `installation_id` (UUID) + optionale E-Mail für den
-// Paddle-Beleg. Ein Supabase-JWT ist optional – wenn vorhanden, wird die
-// user_id zusätzlich mitgegeben.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
@@ -21,20 +17,28 @@ function json(status: number, body: unknown) {
   });
 }
 
+function sanitizeString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
 
-  const apiKey = Deno.env.get("PADDLE_API_KEY");
-  if (!apiKey) return json(500, { error: "paddle_api_key_missing" });
+  const rawApiKey = Deno.env.get("PADDLE_API_KEY");
+  if (!rawApiKey) return json(500, { error: "paddle_api_key_missing" });
+
+  let apiKey = rawApiKey.trim();
+  if (/^["'].*["']$/.test(apiKey)) apiKey = apiKey.slice(1, -1).trim();
 
   let body: Record<string, unknown> = {};
   try { body = await req.json(); } catch (_) { body = {}; }
 
-  const installationId = typeof body.installation_id === "string"
-    ? body.installation_id.trim()
-    : "";
-  const requestEmailRaw = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const installationId = sanitizeString(body.installation_id);
+  const requestEmailRaw = sanitizeString(body.email).toLowerCase();
+  const platform = sanitizeString(body.platform) || "android";
+  const appVersion = sanitizeString(body.app_version);
+  const source = sanitizeString(body.source) || "android_app";
 
   // Optionaler JWT (Cloud-Konto): NICHT erforderlich.
   let userId: string | null = null;
@@ -56,27 +60,22 @@ Deno.serve(async (req) => {
     } catch (_) { /* anonym weiter */ }
   }
 
-  // Ohne Cloud-Konto brauchen wir wenigstens installation_id, damit der
-  // Webhook das anonyme Recht später zuordnen kann.
   if (!userId && !installationId) {
     return json(400, { error: "installation_id_required" });
   }
 
   const customerEmail = requestEmailRaw || claimEmail;
 
-  const customData: Record<string, unknown> = {
-    source: "android_app",
-  };
+  const customData: Record<string, unknown> = { source, platform };
   if (userId) customData.user_id = userId;
   if (installationId) customData.installation_id = installationId;
   if (customerEmail) customData.email = customerEmail;
+  if (appVersion) customData.app_version = appVersion;
 
   const payload: Record<string, unknown> = {
     items: [{ price_id: PADDLE_PRICE_ID, quantity: 1 }],
     custom_data: customData,
-    checkout: {
-      url: "https://cavalyra.de/return",
-    },
+    checkout: { url: "https://cavalyra.de/return" },
   };
   if (customerEmail) {
     (payload as any).customer = { email: customerEmail };
@@ -87,17 +86,22 @@ Deno.serve(async (req) => {
     headers: {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Paddle-Version": "1",
     },
     body: JSON.stringify(payload),
   });
 
-  const data = await res.json().catch(() => null);
+  const rawResponseText = await res.text();
+  let data: any = null;
+  try { data = JSON.parse(rawResponseText); } catch (_) { data = null; }
+
   if (!res.ok || !data?.data) {
     console.error("[create-paddle-checkout] Paddle-API-Fehler", res.status, data);
     return json(502, {
       error: "paddle_api_error",
       status: res.status,
-      details: data,
+      details: data ?? rawResponseText,
     });
   }
 
