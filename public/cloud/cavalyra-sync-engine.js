@@ -213,28 +213,123 @@
   };
 
   // ---------- Change-Erfassung (B1: save() + setItem-Proxy) -----------------
+  const CAV_DIRTY_KEY = "cav_sync_dirty_v1";
+  const CAV_FIRST_DONE_KEY = "cav_sync_first_done_v1";
+  // Mapping der bekannten localStorage-Keys auf ihre Zieltabellen.
+  // Nur Keys, die hier gelistet sind, loesen ueberhaupt einen Sync aus
+  // und werden bei Delta-Pushes beruecksichtigt.
+  const LS_KEY_TO_TABLE = {
+    "horses":"horses",
+    "events":"calendar_events",
+    "horsebook":"horse_journal",
+    "rides":"rides",
+    "scans":"body_scan_history",
+    "courseProgressByHorse":"course_progress",
+    "activeHorseId":"profile_values"
+  };
+
   const dirtyKeys = new Set();
+  (function loadDirty(){
+    try{
+      const raw = localStorage.getItem(CAV_DIRTY_KEY);
+      if(raw){ for(const k of JSON.parse(raw)) dirtyKeys.add(k); }
+    }catch(_){}
+  })();
+  function persistDirty(){
+    try{ rawSetItem(CAV_DIRTY_KEY, JSON.stringify([...dirtyKeys])); }catch(_){}
+  }
   let syncScheduled = false;
 
+  // Content-Hash pro ueberwachtem Key. markDirty setzt nur dann dirty, wenn
+  // sich der tatsaechliche Inhalt geaendert hat. Es wird KEIN automatischer
+  // Sync mehr geplant - der Sync laeuft ausschliesslich einmal beim App-Start
+  // (onLogin) oder auf explizite Nutzeraktion (syncNow / restore).
+  const CAV_HASH_KEY = "cav_sync_hashes_v1";
+  const lastHashes = {};
+  (function loadHashes(){
+    try{
+      const raw = localStorage.getItem(CAV_HASH_KEY);
+      if(raw){ Object.assign(lastHashes, JSON.parse(raw)); }
+    }catch(_){}
+  })();
+  function persistHashes(){
+    try{ rawSetItem(CAV_HASH_KEY, JSON.stringify(lastHashes)); }catch(_){}
+  }
+  function contentHash(s){
+    if(s == null) return "0";
+    let h = 5381;
+    for(let i=0;i<s.length;i++){ h = ((h<<5) + h) + s.charCodeAt(i); h |= 0; }
+    return String(h);
+  }
+
+  // Raw-Referenz auf das ORIGINAL setItem. Interne Schreibvorgaenge der
+  // Sync-Engine (cavalyra_last_sync, dirty-Set, Hashes) laufen darueber und
+  // koennen damit niemals den Storage-Proxy und somit keinen neuen Sync
+  // ausloesen (Self-Trigger-Fix).
+  const rawSetItem = (function(){
+    try{
+      const proto = Object.getPrototypeOf(localStorage);
+      const fn = proto.setItem;
+      return function(k, v){ try{ fn.call(localStorage, k, v); }catch(_){} };
+    }catch(_){ return function(){}; }
+  })();
+
+  // Keys, die NIEMALS einen Sync ausloesen duerfen (Statuswerte der Engine
+  // selbst sowie lokale UI-/Lizenz-Keys).
+  const NEVER_SYNC_KEYS = new Set([
+    "cavalyra_last_sync", CAV_DIRTY_KEY, CAV_HASH_KEY, CAV_FIRST_DONE_KEY,
+    "theme","onboarding_seen","license","license_email","pro_unlocked",
+    "sb_session_v2","cloud_migrated_v2","last_sync"
+  ]);
+
+  // Waehrend eines Restores/Pulls duerfen die eingespielten Daten keinen
+  // erneuten Sync ausloesen.
+  let suppressDirty = false;
   function markDirty(key){
-    if(!key || !key.startsWith(CAV_NS)) return;
+    if(suppressDirty) return;
+    if(!key) return;
+    if(NEVER_SYNC_KEYS.has(key)) return;
+    if(!key.startsWith(CAV_NS)) return;
     const short = key.slice(CAV_NS.length);
-    // interne/UI-Keys ignorieren
-    if(["theme","onboarding_seen","license","license_email","pro_unlocked","sb_session_v2","cloud_migrated_v2"].includes(short)) return;
+    if(NEVER_SYNC_KEYS.has(short)) return;
+    // Nur bekannte Datentabellen-Keys loesen einen Sync aus.
+    if(!Object.prototype.hasOwnProperty.call(LS_KEY_TO_TABLE, short)) return;
+    let val = null;
+    try{ val = localStorage.getItem(key); }catch(_){}
+    const h = contentHash(val);
+    if(lastHashes[short] === h) return;   // Inhalt unveraendert -> kein Sync
+    lastHashes[short] = h;
+    persistHashes();
     dirtyKeys.add(short);
+    persistDirty();
     scheduleSync();
   }
 
+  // Debounce + Cooldown: verhindert Sync-Ketten. Waehrend eines laufenden
+  // Pushes wird nichts neu geplant.
+  const SYNC_DEBOUNCE_MS = 4000;
+  const SYNC_MIN_INTERVAL_MS = 60000;
+  let lastSyncStartedAt = 0;
+  let syncTimer = null;
   function scheduleSync(){
+    if(!Auth.userId()) return;
     if(syncScheduled) return;
     syncScheduled = true;
-    setTimeout(()=>{ syncScheduled = false; pushChanges().catch(e=>{ log("push error", e); logSync({level:"error", op:"push", error:String(e)}); updateStatus({error:String(e)}); }); }, 1500);
+    const since = Date.now() - lastSyncStartedAt;
+    const wait = Math.max(SYNC_DEBOUNCE_MS, SYNC_MIN_INTERVAL_MS - since);
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(async function(){
+      syncScheduled = false;
+      if(pushing){ return; }              // laeuft bereits - kein Nachtreten
+      if(dirtyKeys.size === 0) return;    // nichts zu tun
+      lastSyncStartedAt = Date.now();
+      try{ await pushChanges({}); }catch(_){}
+    }, wait);
   }
 
   // Hook 1: save() wrapper (Primaer)
   function installSaveHook(){
     if(typeof window.save !== "function"){
-      // save() ist noch nicht definiert -> spaeter versuchen
       setTimeout(installSaveHook, 300);
       return;
     }
@@ -265,6 +360,7 @@
     log("localStorage.setItem proxy installed");
   }
 
+
   // ---------- Mapping localStorage -> Datenbanktabellen --------------------
   //
   // Entity-Level-Sync: Wir bilden die vorhandenen Datenstrukturen auf die
@@ -272,13 +368,14 @@
   // landen in *_extra JSONB (falls Tabellenschema es unterstuetzt).
   //
   // Jede build*-Funktion liefert ein Array {table, row} - fertig fuer das RPC.
-  async function collectEntities(){
+  async function collectEntities(filterShortKeys){
+    const want = (k) => !filterShortKeys || filterShortKeys.has(k);
     const uid = Auth.userId();
     if(!uid) return [];
     const out = [];
 
     // horses
-    try{
+    if(want("horses")) try{
       const horses = JSON.parse(localStorage.getItem(CAV_NS+"horses") || "[]");
       for(const h of horses){
         const id = await ensureUuid(h.id, "horse");
@@ -297,7 +394,7 @@
     }catch(e){ log("collect horses failed", e); }
 
     // calendar events
-    try{
+    if(want("events")) try{
       const events = JSON.parse(localStorage.getItem(CAV_NS+"events") || "[]");
       for(const e of events){
         const id = await ensureUuid(e.id, "event");
@@ -315,7 +412,7 @@
     }catch(err){ log("collect events failed", err); }
 
     // horse journal (horsebook)
-    try{
+    if(want("horsebook")) try{
       const hb = JSON.parse(localStorage.getItem(CAV_NS+"horsebook") || "[]");
       for(const e of hb){
         const id = await ensureUuid(e.id, "journal");
@@ -333,7 +430,7 @@
     }catch(err){ log("collect journal failed", err); }
 
     // rides (state.rides is grouped by horseId)
-    try{
+    if(want("rides")) try{
       const rides = JSON.parse(localStorage.getItem(CAV_NS+"rides") || "{}");
       for(const hid of Object.keys(rides||{})){
         const horseId = await ensureUuid(hid, "horse");
@@ -354,7 +451,7 @@
     }catch(err){ log("collect rides failed", err); }
 
     // body scans
-    try{
+    if(want("scans")) try{
       const scans = JSON.parse(localStorage.getItem(CAV_NS+"scans") || "{}");
       for(const hid of Object.keys(scans||{})){
         const horseId = await ensureUuid(hid, "horse");
@@ -374,7 +471,7 @@
     }catch(err){ log("collect scans failed", err); }
 
     // course progress
-    try{
+    if(want("courseProgressByHorse")) try{
       const cp = JSON.parse(localStorage.getItem(CAV_NS+"courseProgressByHorse") || "{}");
       for(const hid of Object.keys(cp||{})){
         const horseId = await ensureUuid(hid, "horse");
@@ -392,7 +489,7 @@
     }catch(err){ log("collect course progress failed", err); }
 
     // profile values (activeHorseId, etc.)
-    try{
+    if(want("activeHorseId")) try{
       const active = JSON.parse(localStorage.getItem(CAV_NS+"activeHorseId") || "null");
       if(active){
         const id = await ensureUuid("activeHorseId", "profile");
@@ -407,13 +504,33 @@
 
   // ---------- Push (Outbox -> Cloud) ---------------------------------------
   let pushing = false;
-  async function pushChanges(){
+  async function pushChanges(opts){
     if(pushing) return;
     if(!Auth.userId()) return;
+    const full = !!(opts && opts.full);
+    // Snapshot der aktuell schmutzigen Keys - nur diese werden gepusht.
+    // Neu waehrend des Push-Laufs eintrudelnde Keys bleiben im Set und
+    // triggern spaeter einen weiteren Sync.
+    const pushSet = new Set(dirtyKeys);
+    if(!full && pushSet.size === 0){
+      updateStatus({status:"idle"});
+      return;
+    }
     pushing = true;
-    updateStatus({status:"syncing"});
     try{
-      const entities = await collectEntities();
+      const filter = full ? null : pushSet;
+      const entities = await collectEntities(filter);
+      // Wenn nichts tatsaechlich zu pushen ist: dirty-Keys als "verarbeitet"
+      // verwerfen (leere Struktur), Status auf idle, kein "Synchronisiere..."
+      // Flackern in der UI, kein RPC.
+      if(entities.length === 0){
+        for(const k of pushSet) dirtyKeys.delete(k);
+        persistDirty();
+        updateStatus({status:"idle"});
+        log(`push skipped: 0 entities (keys=${[...pushSet].join(",")||"-"})`);
+        return;
+      }
+      updateStatus({status:"syncing"});
       let ok = 0, fail = 0;
       for(const {table, row} of entities){
         try{
@@ -431,11 +548,20 @@
       }
       // Storage-Uploads (Body-Scans, Horse-Bilder)
       await uploadPendingImages();
-      dirtyKeys.clear();
+      // Nur bei komplett erfolgreichem Push die gepushten Keys aus dem
+      // Dirty-Set entfernen; sonst bleiben sie fuer einen Retry stehen.
+      if(fail === 0){
+        for(const k of pushSet) dirtyKeys.delete(k);
+        persistDirty();
+        if(full){
+          try{ rawSetItem(CAV_FIRST_DONE_KEY, "1"); }catch(_){}
+        }
+      }
       const lastSync = now();
-      try{ localStorage.setItem("cavalyra_last_sync", lastSync); }catch(_){}
+      // WICHTIG: rawSetItem umgeht den Storage-Proxy -> kein Self-Trigger.
+      try{ rawSetItem("cavalyra_last_sync", lastSync); }catch(_){}
       updateStatus({status:"idle", lastSync, ok, fail});
-      log(`push done: ${ok} ok / ${fail} fail`);
+      log(`push done: ${ok} ok / ${fail} fail (full=${full}, keys=${[...pushSet].join(",")||"-"})`);
     } finally {
       pushing = false;
     }
@@ -554,6 +680,11 @@
   }
 
   async function pullFromCloud({merge=true} = {}){
+    suppressDirty = true;
+    try{ return await pullFromCloudInner({merge}); }
+    finally{ setTimeout(function(){ suppressDirty = false; }, 1000); }
+  }
+  async function pullFromCloudInner({merge=true} = {}){
     const uid = Auth.userId(); if(!uid) throw new Error("nicht angemeldet");
     updateStatus({status:"restoring"});
     // Wir laden aus Effizienz-Gruenden pro Tabelle die Rohdaten und
@@ -687,29 +818,9 @@
   }
   function getStatus(){ return { ...status }; }
 
-  // ---------- Realtime (best effort) ---------------------------------------
-  let rtSocket = null;
-  function startRealtime(){
-    if(rtSocket || !Auth.token()) return;
-    try{
-      const wsUrl = SUPABASE_URL.replace(/^http/,"ws") + `/realtime/v1/websocket?apikey=${SUPABASE_ANON_KEY}&vsn=1.0.0`;
-      rtSocket = new WebSocket(wsUrl);
-      rtSocket.onopen = () => {
-        // Subscribe pro Tabelle (RLS scoped auf user)
-        for(const t of TABLES){
-          rtSocket.send(JSON.stringify({ topic:`realtime:public:${t}`, event:"phx_join", payload:{}, ref: String(Date.now()) }));
-        }
-      };
-      rtSocket.onmessage = (ev) => {
-        try{
-          const msg = JSON.parse(ev.data);
-          if(msg.event === "postgres_changes"){ scheduleSync(); }
-        }catch(_){}
-      };
-      rtSocket.onclose = () => { rtSocket = null; setTimeout(startRealtime, 5000); };
-      rtSocket.onerror = () => { try{ rtSocket.close(); }catch(_){} };
-    }catch(e){ log("realtime failed", e); }
-  }
+  // ---------- Realtime: dauerhaft deaktiviert ------------------------------
+  // Der Sync laeuft ausschliesslich einmalig beim App-Start. Es wird KEINE
+  // WebSocket-Verbindung mehr geoeffnet und kein Hintergrund-Trigger erzeugt.
 
   // ---------- Public API ----------------------------------------------------
   const API = {
@@ -733,8 +844,8 @@
     async deleteAccount(){
       return api("/functions/v1/delete-account", { method:"POST", body:"{}" });
     },
-    // Sync
-    syncNow: () => pushChanges(),
+    // Sync (manuell)
+    syncNow: () => pushChanges({full:true}),
     restore: () => pullFromCloud(),
     getStatus,
     getLog: () => idbAll("log"),
@@ -745,19 +856,22 @@
     _auth: Auth
   };
 
+  // Merker: Start-Sync pro Session nur einmal ausfuehren.
+  let startSyncDone = false;
+
   async function onLogin(){
     updateStatus({ enabled:true, user: Auth.session?.user });
-    installSaveHook();
-    installStorageProxy();
-    try{ await migrateIfNeeded(); }
-    catch(e){ updateStatus({ error: "Migration fehlgeschlagen: "+e.message }); return; }
-    startRealtime();
-    scheduleSync();
+    if(startSyncDone) return;
+    startSyncDone = true;
+    // Genau EIN vollstaendiger Lauf pro Session: erst ziehen, dann pushen.
+    try{ await pullFromCloud(); }catch(e){ log("start pull failed", e); }
+    lastSyncStartedAt = Date.now();
+    try{ await pushChanges({full:true}); }catch(e){ log("start push failed", e); }
   }
+
   async function onLogout(){
     updateStatus({ enabled:false, user:null });
-    try{ rtSocket && rtSocket.close(); }catch(_){}
-    rtSocket = null;
+    startSyncDone = false;
   }
 
   // ---------- Init ----------------------------------------------------------

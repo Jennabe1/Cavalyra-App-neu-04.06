@@ -2614,6 +2614,46 @@ function licenseRank(status){
   return ({ pro:5, trial:4, past_due:3, expired:2, canceled:1, free:0 })[canonicalLicenseStatus(status)] || 0;
 }
 
+/* ---------------------------------------------------------------------------
+   FIX: Ablauf der Testphase / des Abos wird jetzt bei JEDER Auswertung geprüft.
+   Vorher konnte ein gespeicherter (abgelaufener) trial/pro-Status dauerhaft
+   Pro freischalten, weil weder hasProAccess() noch normalizeLicense() ein
+   Ablaufdatum berücksichtigt haben.
+   --------------------------------------------------------------------------- */
+const CAVALYRA_TRIAL_DAYS = 3;
+
+function licenseExpiryTime(lic){
+  if(!lic) return 0;
+  const raw = lic.validUntil || lic.expiresAt || lic.expiryDate || lic.expires_at || "";
+  if(raw){
+    const t = new Date(raw).getTime();
+    if(!isNaN(t)) return t;
+  }
+  // Lokale Testphase ohne Serverdatum: trialStart + 3 Tage
+  if(canonicalLicenseStatus(lic.status) === "trial" && lic.trialStart){
+    const start = new Date(String(lic.trialStart).length <= 10 ? (lic.trialStart + "T12:00:00") : lic.trialStart).getTime();
+    if(!isNaN(start)) return start + CAVALYRA_TRIAL_DAYS*24*60*60*1000;
+  }
+  return 0;
+}
+
+function isLicenseExpired(lic){
+  const t = licenseExpiryTime(lic);
+  return !!t && t <= Date.now();
+}
+
+/* Liefert eine Kopie der Lizenz, deren Status bei Ablauf auf "expired"
+   heruntergestuft ist. Verändert keine Kauf- oder Serverlogik. */
+function decayExpiredLicense(lic){
+  if(!lic) return lic;
+  const s = canonicalLicenseStatus(lic.status);
+  if((s === "pro" || s === "trial") && isLicenseExpired(lic)){
+    lic.status = "expired";
+    lic.pro = false;
+  }
+  return lic;
+}
+
 function readStoredLicense(){
   const stores = [];
   try{ stores.push(localStorage); }catch(_){}
@@ -2627,12 +2667,14 @@ function readStoredLicense(){
         const parsed = JSON.parse(raw);
         if(!parsed || typeof parsed !== "object") return;
         parsed.status = canonicalLicenseStatus(parsed.status || (parsed.pro ? "pro" : "free"));
+        decayExpiredLicense(parsed);
         if(!best || licenseRank(parsed.status) > licenseRank(best.status)) best = parsed;
       }catch(_){}
     });
   });
   return best;
 }
+
 
 function persistLicense(license){
   CAVALYRA_LICENSE_STORAGE_KEYS.forEach(key=>{
@@ -2652,8 +2694,10 @@ function normalizeLicense(){
   const stored = readStoredLicense();
   const current = state.license || {};
   current.status = canonicalLicenseStatus(current.status || (current.pro ? "pro" : "free"));
+  decayExpiredLicense(current);
   state.license = stored && licenseRank(stored.status) > licenseRank(current.status) ? stored : current;
   state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+  decayExpiredLicense(state.license);
   state.license.pro = isLicenseAccessStatus(state.license.status);
   return state.license;
 }
@@ -2663,11 +2707,13 @@ function saveLicense(force){
   else {
     state.license = state.license || {};
     state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+    decayExpiredLicense(state.license);
     state.license.pro = isLicenseAccessStatus(state.license.status);
   }
   save("license", state.license);
   persistLicense(state.license);
 }
+
 
 function licenseEmail(){
   try{ return localStorage.getItem("cavalyra_license_email") || sessionStorage.getItem("cavalyra_license_email") || ""; }catch(_){ return ""; }
@@ -2854,13 +2900,42 @@ function trialDaysLeft(){
 
 function hasProAccess(){
   const lic = normalizeLicense();
+  // normalizeLicense() stuft abgelaufene Lizenzen bereits auf "expired" zurück.
+  if(isLicenseExpired(lic)) return false;
   if(lic.status === "pro") return true;
-  if(lic.status === "trial"){
-    if(lic.validUntil) return new Date(lic.validUntil) > new Date();
-    return true;
-  }
+  if(lic.status === "trial") return true;
   return false;
 }
+
+/* Ablauf-Wächter: bewertet die Sperre nach Ablauf der Testphase erneut.
+   Er startet keine Käufe und ändert keine Kauflogik - er ruft lediglich die
+   bereits vorhandene Statusprüfung erneut auf und rendert bei Änderung neu. */
+(function installLicenseExpiryWatch(){
+  let lastAccess = null;
+  async function evaluate(){
+    try{
+      const before = normalizeLicense();
+      const wasExpiredNow = isLicenseExpired(before);
+      if(wasExpiredNow && before.pro !== false){ saveLicense(true); }
+      // Nach Ablauf einmalig den echten Store-/Serverstatus erneut abfragen,
+      // damit ein weiterlaufendes Abo sofort wieder freischaltet.
+      if(wasExpiredNow && window.CavalyraBilling && typeof window.CavalyraBilling.checkProStatus === "function"){
+        try{ await window.CavalyraBilling.checkProStatus(); }catch(_){}
+      }
+      const access = hasProAccess();
+      if(lastAccess !== null && access !== lastAccess){ try{ render(); }catch(_){} }
+      lastAccess = access;
+    }catch(_){}
+  }
+  setTimeout(evaluate, 4000);
+  setInterval(evaluate, 60*1000);
+  try{
+    window.addEventListener("focus", evaluate);
+    const App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+    if(App && App.addListener){ App.addListener("resume", evaluate); }
+  }catch(_){}
+})();
+
 
 /* Silent license refresh: läuft beim Start und bei App-Resume.
    Fehlschläge (kein Internet, Server down) verändern den Status NICHT.

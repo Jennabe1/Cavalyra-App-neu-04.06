@@ -20,6 +20,7 @@ export type Database = {
           created_at: string
           deleted: boolean
           deleted_at: string | null
+          field_meta: Json
           horse_id: string | null
           id: string
           image_paths: string[]
@@ -35,6 +36,7 @@ export type Database = {
           created_at?: string
           deleted?: boolean
           deleted_at?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           image_paths?: string[]
@@ -50,6 +52,7 @@ export type Database = {
           created_at?: string
           deleted?: boolean
           deleted_at?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           image_paths?: string[]
@@ -433,6 +436,7 @@ export type Database = {
           distance_m: number | null
           duration_s: number | null
           ended_at: string | null
+          field_meta: Json
           horse_id: string | null
           id: string
           max_speed: number | null
@@ -452,6 +456,7 @@ export type Database = {
           distance_m?: number | null
           duration_s?: number | null
           ended_at?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           max_speed?: number | null
@@ -471,6 +476,7 @@ export type Database = {
           distance_m?: number | null
           duration_s?: number | null
           ended_at?: string | null
+          field_meta?: Json
           horse_id?: string | null
           id?: string
           max_speed?: number | null
@@ -521,6 +527,30 @@ export type Database = {
           server_ts?: string | null
           server_value?: Json | null
           table_name?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      sync_rate_limit: {
+        Row: {
+          created_at: string
+          last_sync_at: string
+          sync_count: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          last_sync_at?: string
+          sync_count?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          last_sync_at?: string
+          sync_count?: number
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
