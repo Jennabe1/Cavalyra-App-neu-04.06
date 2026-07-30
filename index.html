@@ -2637,6 +2637,56 @@ function licenseExpiryTime(lic){
   return 0;
 }
 
+/* ---------------------------------------------------------------------------
+   FIX (Ursache): Eine Trial-Lizenz wurde ohne jedes Ablaufdatum gespeichert
+   (validUntil = "" und kein trialStart). Dadurch war die Ablaufberechnung
+   strukturell wirkungslos.
+   Lösung an der Quelle: Beim SPEICHERN einer Trial-Lizenz wird sichergestellt,
+   dass die für die Ablaufberechnung nötigen Daten vorhanden sind:
+     - validUntil vom Server hat immer Vorrang,
+     - fehlt es, wird der Trial-Beginn (trialStart) einmalig festgehalten und
+       daraus validUntil = trialStart + CAVALYRA_TRIAL_DAYS abgeleitet.
+   Es wird NIEMANDEM der Zugang entzogen: ohne Datum wird nicht gesperrt,
+   sondern das fehlende Datum wird ergänzt und der Grund protokolliert.
+   Käufe (status "pro") und StoreKit bleiben unangetastet.
+   --------------------------------------------------------------------------- */
+function ensureLicenseCompleteness(lic){
+  if(!lic || typeof lic !== "object") return lic;
+  const s = canonicalLicenseStatus(lic.status);
+  if(s !== "trial") return lic;
+
+  // Serverdatum vorhanden -> nichts zu tun, ggf. nur nach validUntil spiegeln.
+  const serverEnd = lic.validUntil || lic.expiresAt || lic.expiryDate || lic.expires_at || "";
+  if(serverEnd){
+    if(!lic.validUntil) lic.validUntil = serverEnd;
+    return lic;
+  }
+
+  // App-Store-Trials werden von StoreKit verwaltet: dort ist das Ablaufdatum
+  // die Quelle der Wahrheit. Fehlt es, wird NICHT lokal gesperrt, sondern nur
+  // protokolliert, damit die Ursache sichtbar bleibt.
+  if(lic.source === "app_store"){
+    if(!lic.trialExpiryMissingLoggedAt){
+      lic.trialExpiryMissingLoggedAt = new Date().toISOString();
+      try{ console.warn("[CavalyraLicense] StoreKit-Trial ohne expiryDate erhalten – lokaler Ablauf wird nicht erzwungen.", { source: lic.source, checkedAt: lic.checkedAt || null }); }catch(_){}
+    }
+    return lic;
+  }
+
+  // Kein Serverdatum: Trial-Beginn einmalig festhalten und Ablauf ableiten.
+  if(!lic.trialStart){
+    lic.trialStart = new Date().toISOString();
+    lic.trialStartSource = "local_fallback";
+    try{ console.warn("[CavalyraLicense] Trial ohne validUntil gespeichert – trialStart lokal gesetzt.", { trialStart: lic.trialStart, source: lic.source || "" }); }catch(_){}
+  }
+  const derived = licenseExpiryTime(lic);
+  if(derived){
+    lic.validUntil = new Date(derived).toISOString();
+    lic.validUntilSource = lic.validUntilSource || "derived_from_trial_start";
+  }
+  return lic;
+}
+
 function isLicenseExpired(lic){
   const t = licenseExpiryTime(lic);
   return !!t && t <= Date.now();
@@ -2667,6 +2717,7 @@ function readStoredLicense(){
         const parsed = JSON.parse(raw);
         if(!parsed || typeof parsed !== "object") return;
         parsed.status = canonicalLicenseStatus(parsed.status || (parsed.pro ? "pro" : "free"));
+        ensureLicenseCompleteness(parsed);
         decayExpiredLicense(parsed);
         if(!best || licenseRank(parsed.status) > licenseRank(best.status)) best = parsed;
       }catch(_){}
@@ -2694,9 +2745,11 @@ function normalizeLicense(){
   const stored = readStoredLicense();
   const current = state.license || {};
   current.status = canonicalLicenseStatus(current.status || (current.pro ? "pro" : "free"));
+  ensureLicenseCompleteness(current);
   decayExpiredLicense(current);
   state.license = stored && licenseRank(stored.status) > licenseRank(current.status) ? stored : current;
   state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+  ensureLicenseCompleteness(state.license);
   decayExpiredLicense(state.license);
   state.license.pro = isLicenseAccessStatus(state.license.status);
   return state.license;
@@ -2707,6 +2760,7 @@ function saveLicense(force){
   else {
     state.license = state.license || {};
     state.license.status = canonicalLicenseStatus(state.license.status || (state.license.pro ? "pro" : "free"));
+    ensureLicenseCompleteness(state.license);
     decayExpiredLicense(state.license);
     state.license.pro = isLicenseAccessStatus(state.license.status);
   }

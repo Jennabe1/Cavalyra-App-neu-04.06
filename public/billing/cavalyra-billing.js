@@ -251,9 +251,24 @@
         window.state.license.source = source;
       }
       if(extra && typeof extra === "object"){
-        for(var k in extra){ if(Object.prototype.hasOwnProperty.call(extra,k)) window.state.license[k] = extra[k]; }
+        // FIX: Leere Datumsfelder dürfen ein bereits bekanntes Ablaufdatum
+        // NICHT überschreiben (sonst geht validUntil bei jedem Refresh ohne
+        // Serverdatum verloren und der Ablauf lässt sich nie berechnen).
+        var dateFields = { validUntil:1, expiresAt:1, expiryDate:1, expires_at:1 };
+        for(var k in extra){
+          if(!Object.prototype.hasOwnProperty.call(extra,k)) continue;
+          var v = extra[k];
+          if(dateFields[k] && (v === "" || v === null || v === undefined)) continue;
+          window.state.license[k] = v;
+        }
       }
       window.state.license.checkedAt = new Date().toISOString();
+      // Diagnose: Trial ohne Ablaufdatum sichtbar machen statt still zu ignorieren.
+      var st = String(window.state.license.status || "").toLowerCase();
+      if((st === "trial" || st === "trialing") && !window.state.license.validUntil){
+        debug("license:trial-without-expiry", { source: window.state.license.source || "", extra: extra || {} });
+      }
+
       if(typeof window.saveLicense === "function") window.saveLicense(true);
       if(typeof window.render === "function") window.render();
       debug("license-change:applied", { active:!!active, source:source || "", extra:extra || {}, after:licenseSnapshot() });
@@ -297,7 +312,7 @@
             // .approved() feuert. Pro sofort freischalten, damit der Nutzer
             // nicht auf .verified() warten muss (bei CdvPurchase v13 feuert
             // .verified() nur, wenn store.validator ein Success-Payload liefert).
-            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_approved" });
+            applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_approved" }, t));
             if(t && typeof t.verify === "function") { try { t.verify(); } catch(_){} }
             else { try { if(t && t.finish) t.finish(); } catch(_){} }
             setTimeout(syncIosStore, 2000);
@@ -307,7 +322,7 @@
           try{
             debug("storekit:purchase-verified-callback", { receipt:r });
             markIosApproved();
-            applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified" });
+            applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified" }, r));
             try{ if(r && r.finish) r.finish(); }catch(_){ }
             setTimeout(syncIosStore, 4000);
           }catch(e){ debug("storekit:verified-handler-error", { message:e && e.message ? e.message : String(e) }); }
@@ -409,16 +424,72 @@
     debug(result ? "storekit:entitlement-found" : "storekit:entitlement-not-found", { result:!!result, productId:PRODUCT_ID_IOS });
     return !!result;
   }
+  // -------- StoreKit expiryDate -> validUntil (reines Auslesen, keine Kauflogik) --------
+  function readExpiryValue(tx){
+    if(!tx || typeof tx !== "object") return null;
+    var ms = tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs;
+    if(ms){ var dm = new Date(Number(ms)); return isNaN(dm.getTime()) ? null : dm; }
+    var raw = tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime;
+    if(!raw) return null;
+    var d = (raw instanceof Date) ? raw : new Date(typeof raw === "number" ? raw : String(raw));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  function collectIosExpiry(obj, depth, acc){
+    if(!obj || depth > 6 || typeof obj !== "object") return acc;
+    if(Array.isArray(obj)){
+      for(var i=0;i<obj.length;i++) collectIosExpiry(obj[i], depth+1, acc);
+      return acc;
+    }
+    var directId = obj.id || obj.productId || obj.product_id;
+    var products = obj.products || obj.productIds || obj.product_ids;
+    var hasProduct = directId === PRODUCT_ID_IOS;
+    if(!hasProduct && Array.isArray(products)){
+      for(var p=0;p<products.length;p++){
+        var item = products[p];
+        if(item === PRODUCT_ID_IOS || (item && (item.id === PRODUCT_ID_IOS || item.productId === PRODUCT_ID_IOS))){ hasProduct = true; break; }
+      }
+    }
+    if(hasProduct){
+      var d = readExpiryValue(obj);
+      if(d && (!acc.value || d.getTime() > acc.value.getTime())) acc.value = d;
+    }
+    var keys = Object.keys(obj);
+    for(var k=0;k<keys.length;k++){
+      var key = keys[k];
+      if(/token|secret|password|authorization/i.test(key)) continue;
+      collectIosExpiry(obj[key], depth+1, acc);
+    }
+    return acc;
+  }
+  // Liefert das aktuellste von StoreKit gemeldete Ablaufdatum als ISO-String.
+  function getIosExpiryDate(sourceObj){
+    var acc = { value:null };
+    try { if(sourceObj) collectIosExpiry(sourceObj, 0, acc); } catch(_){}
+    try {
+      var store = getStore();
+      if(store) collectIosExpiry(store.localReceipts || store.receipts || [], 0, acc);
+    } catch(_){}
+    return acc.value ? acc.value.toISOString() : "";
+  }
+  // Hängt validUntil nur an, wenn StoreKit tatsächlich ein Datum liefert.
+  function withIosExpiry(extra, sourceObj){
+    var out = extra || {};
+    var iso = getIosExpiryDate(sourceObj);
+    if(iso){ out.validUntil = iso; out.expiresAt = iso; out.validUntilSource = "storekit"; }
+    else { debug("storekit:no-expiry-date", { productId: PRODUCT_ID_IOS }); }
+    return out;
+  }
   function isIosProductOwned(){
     var owned = hasValidatedIosEntitlement();
     debug("hasActiveIosEntitlement:return", { result:owned });
     return owned;
   }
+
   function syncIosStore(){
     if(!isIosApp()) return;
     debug("storekit:sync-start", { before:licenseSnapshot() });
     if(isIosProductOwned()){
-      applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"sync_active_entitlement" });
+      applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"sync_active_entitlement" }, null));
       return;
     }
     // Nicht demoten, wenn der Kauf gerade eben approved/verified wurde
@@ -679,7 +750,7 @@
     // Bereits Pro? Dann keinen zweiten Kaufdialog öffnen.
     try {
       if(isIosProductOwned()){
-        applyProState(true, "app_store", { productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"already_owned_before_purchase" });
+        applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"already_owned_before_purchase" }, null));
         return true;
       }
     } catch(_){}
