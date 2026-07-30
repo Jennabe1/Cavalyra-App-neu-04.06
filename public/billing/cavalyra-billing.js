@@ -308,6 +308,7 @@
           try {
             markIosApproved();
             debug("storekit:purchase-approved-callback", { transaction:t });
+            dumpStoreKitDiagnostics("approved", t);
             // StoreKit hat den Kauf bereits gegenüber Apple bestätigt, bevor
             // .approved() feuert. Pro sofort freischalten, damit der Nutzer
             // nicht auf .verified() warten muss (bei CdvPurchase v13 feuert
@@ -321,6 +322,7 @@
         .verified(function(r){
           try{
             debug("storekit:purchase-verified-callback", { receipt:r });
+            dumpStoreKitDiagnostics("verified", r);
             markIosApproved();
             applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified" }, r));
             try{ if(r && r.finish) r.finish(); }catch(_){ }
@@ -329,7 +331,7 @@
         })
         .productUpdated(function(p){ debug("storekit:product-updated", { product:p }); syncIosStore(); })
         .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r, entitlement:hasValidatedIosEntitlement(r) }); syncIosStore(); })
-        .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); syncIosStore(); });
+        .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); dumpStoreKitDiagnostics("receipts-ready", null); syncIosStore(); });
       store.validator = function(receipt, cb){
         // CdvPurchase v13 erwartet ein ValidatorResponse-Payload (Objekt),
         // kein Boolean. Ein `true`-Boolean führt dazu, dass der Transition
@@ -478,6 +480,74 @@
     if(iso){ out.validUntil = iso; out.expiresAt = iso; out.validUntilSource = "storekit"; }
     else { debug("storekit:no-expiry-date", { productId: PRODUCT_ID_IOS }); }
     return out;
+  }
+  // -------- Reine StoreKit-Diagnose (nur Protokollierung, keine Logik) --------
+  function describeTx(tx){
+    if(!tx || typeof tx !== "object") return null;
+    var exp = readExpiryValue(tx);
+    var now = Date.now();
+    return {
+      transactionId: tx.transactionId || tx.id || null,
+      products: (tx.products || []).map ? (tx.products || []).map(function(p){ return (p && (p.id || p.productId)) || p; }) : null,
+      productId: tx.productId || tx.product_id || null,
+      state: tx.state || null,
+      isAcknowledged: tx.isAcknowledged === true,
+      isPending: tx.isPending === true,
+      renewalIntent: tx.renewalIntent || null,
+      purchaseDate: tx.purchaseDate ? String(tx.purchaseDate) : null,
+      expirationDateRaw: (tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresDateMs || null) === null ? null : String(tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresDateMs),
+      expirationDateISO: exp ? exp.toISOString() : null,
+      expirationRelative: exp ? (exp.getTime() > now ? "future" : "past") : "nil",
+      msUntilExpiry: exp ? (exp.getTime() - now) : null
+    };
+  }
+  // Protokolliert den kompletten von StoreKit gelieferten Zustand.
+  function dumpStoreKitDiagnostics(tag, sourceObj){
+    try {
+      var store = getStore();
+      if(!store){ debug("storekit:diagnostics", { tag:tag||"", available:false }); return null; }
+      var receipts = store.localReceipts || store.receipts || [];
+      var txs = [];
+      try {
+        for(var i=0;i<receipts.length;i++){
+          var t = (receipts[i] && receipts[i].transactions) || [];
+          for(var j=0;j<t.length;j++) txs.push(describeTx(t[j]));
+        }
+      } catch(_){}
+      var products = [];
+      try {
+        var list = (typeof store.products !== "undefined" && store.products) || [];
+        for(var k=0;k<list.length;k++){
+          var p = list[k];
+          products.push({
+            id: p.id, owned: p.owned === true, canPurchase: p.canPurchase === true,
+            offers: (p.offers || []).map ? (p.offers || []).map(function(o){
+              return { id:o.id, pricingPhases:(o.pricingPhases||[]).map(function(ph){
+                return { price:ph.price, priceMicros:ph.priceMicros, billingPeriod:ph.billingPeriod, paymentMode:ph.paymentMode, recurrenceMode:ph.recurrenceMode };
+              }) };
+            }) : null
+          });
+        }
+      } catch(_){}
+      var info = {
+        tag: tag || "",
+        now: new Date().toISOString(),
+        productIdExpected: PRODUCT_ID_IOS,
+        products: products,
+        transactions: txs,
+        activeTransactionsForProduct: txs.filter(function(t){
+          if(!t) return false;
+          return t.productId === PRODUCT_ID_IOS || (t.products && t.products.indexOf(PRODUCT_ID_IOS) >= 0);
+        }),
+        sourceObject: sourceObj ? describeTx(sourceObj) : null,
+        resolvedExpiry: getIosExpiryDate(sourceObj) || null,
+        entitlementDecision: (function(){ try { return hasValidatedIosEntitlement(); } catch(_){ return null; } })(),
+        licenseSnapshot: (function(){ try { return licenseSnapshot(); } catch(_){ return null; } })()
+      };
+      debug("storekit:diagnostics", info);
+      try { console.log("[CavalyraBilling][StoreKit-Diagnose] " + (tag||""), JSON.stringify(info, null, 2)); } catch(_){}
+      return info;
+    } catch(e){ debug("storekit:diagnostics-error", { message: e && e.message ? e.message : String(e) }); return null; }
   }
   function isIosProductOwned(){
     var owned = hasValidatedIosEntitlement();
@@ -739,6 +809,7 @@
 
   async function startProPurchase(){
     debug("button:pro-freischalten-pressed", { platform:getPlatform(), before:licenseSnapshot() });
+    try { if(isIosApp()) dumpStoreKitDiagnostics("before-purchase", null); } catch(_){}
     if(isAndroidApp()){
       // Android: kompletter Kaufprozess läuft ausschließlich auf der Website.
       await openProWebsite();
@@ -918,6 +989,7 @@
     openProWebsite: openProWebsite,
     getInstallationId: getInstallationId
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
+    ,dumpStoreKitDiagnostics: dumpStoreKitDiagnostics
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
 
