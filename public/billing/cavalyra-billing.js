@@ -276,10 +276,32 @@
   }
 
   // -------------------- iOS StoreKit --------------------
-  var iosBilling = { ready:false, initStarted:false, initError:null, lastApprovedAt:0, receiptsSeen:false };
+  // "Receipt vollständig geladen" bedeutet:
+  //   1. StoreKit initialisiert (iosBilling.ready)
+  //   2. restorePurchases() abgeschlossen (iosBilling.restoreCompleted)
+  //   3. receiptsReady-Event gefeuert ODER mindestens ein Receipt vorhanden.
+  // Diese drei Bedingungen müssen ALLE erfüllt sein, bevor syncIosStore()
+  // eine Demotion wegen fehlenden Entitlements durchführen darf.
+  var iosBilling = {
+    ready:false, initStarted:false, initError:null,
+    lastApprovedAt:0, receiptsSeen:false,
+    receiptsReadyFired:false, restoreCompleted:false
+  };
 
   function getStore(){ return (window.CdvPurchase && window.CdvPurchase.store) || null; }
   function iosPlatform(){ var C=window.CdvPurchase; return C ? C.Platform.APPLE_APPSTORE : null; }
+
+  function isReceiptFullyLoaded(){
+    if(!iosBilling.ready) return false;
+    if(!iosBilling.restoreCompleted) return false;
+    var hasReceipts = false;
+    try {
+      var store = getStore();
+      var receipts = store && (store.localReceipts || store.receipts);
+      hasReceipts = !!(receipts && receipts.length);
+    } catch(_){}
+    return iosBilling.receiptsReadyFired || hasReceipts;
+  }
 
   function markIosApproved(){
     iosBilling.lastApprovedAt = Date.now();
@@ -331,7 +353,7 @@
         })
         .productUpdated(function(p){ debug("storekit:product-updated", { product:p }); syncIosStore(); })
         .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r, entitlement:hasValidatedIosEntitlement(r) }); syncIosStore(); })
-        .receiptsReady(function(){ iosBilling.receiptsSeen = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); dumpStoreKitDiagnostics("receipts-ready", null); syncIosStore(); });
+        .receiptsReady(function(){ iosBilling.receiptsSeen = true; iosBilling.receiptsReadyFired = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); dumpStoreKitDiagnostics("receipts-ready", null); syncIosStore(); });
       store.validator = function(receipt, cb){
         // CdvPurchase v13 erwartet ein ValidatorResponse-Payload (Objekt),
         // kein Boolean. Ein `true`-Boolean führt dazu, dass der Transition
@@ -345,7 +367,20 @@
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
         debug("storekit:initialized", { productId: PRODUCT_ID_IOS });
-        try { if(typeof store.restorePurchases === "function") store.restorePurchases().catch(function(){}); } catch(_){}
+        if(typeof store.restorePurchases === "function"){
+          store.restorePurchases().then(function(){
+            iosBilling.restoreCompleted = true;
+            debug("storekit:restore-completed", { receiptFullyLoaded: isReceiptFullyLoaded() });
+            syncIosStore();
+          }).catch(function(err){
+            iosBilling.restoreCompleted = true;
+            debug("storekit:restore-failed", { message:(err && err.message) || String(err), receiptFullyLoaded: isReceiptFullyLoaded() });
+            syncIosStore();
+          });
+        } else {
+          iosBilling.restoreCompleted = true;
+          syncIosStore();
+        }
         setTimeout(syncIosStore, 2000);
       }).catch(function(err){
         iosBilling.initError = (err && err.message) || String(err);
@@ -365,24 +400,41 @@
       return !!(receipts && receipts.length);
     } catch(_){ return false; }
   }
+  /* Einzige Verantwortung: Produkttyp bestimmen (Abo vs. Einmalkauf/Lifetime).
+     Quelle ist zuerst die Transaktion selbst, danach das StoreKit-Produkt. */
+  function isSubscriptionTransaction(tx){
+    var t = "";
+    try {
+      t = String((tx && (tx.type || tx.productType || tx.product_type)) || "").toLowerCase();
+      if(!t){
+        var p = getIosProduct();
+        t = String((p && (p.type || p.productType)) || "").toLowerCase();
+      }
+    } catch(_){}
+    if(!t) return true; // Cavalyra Pro ist ein Abo: im Zweifel strenger bewerten.
+    return t.indexOf("subscription") !== -1;
+  }
   function transactionLooksActive(tx){
     if(!tx) return false;
     var state = String(tx.state || tx.transactionState || tx.status || "").toLowerCase();
     if(state === "initiated" || state === "pending" || state === "approved") return false;
     if(state && !(state === "owned" || state === "finished" || state === "verified")) return false;
-    var expiry = tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime;
-    var expiryMs = tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs;
-    var end = expiryMs ? new Date(Number(expiryMs)) : (expiry ? new Date(expiry) : null);
-    if(end && !isNaN(end.getTime()) && end <= new Date()) return false;
     if(tx.isConsumed === true || tx.revoked === true || tx.isRevoked === true) return false;
+    // Zentrale Ablaufprüfung: dieselbe Logik wie beim validUntil-Mapping.
+    var end = readExpiryValue(tx);
+    var hasValidEnd = !!(end && !isNaN(end.getTime()));
+    if(hasValidEnd && end <= new Date()) return false;
+
+    // Auto-Renewable Subscription: ausschließlich das Ablaufdatum entscheidet.
+    // owned/finished/verified allein genügt hier niemals.
+    if(isSubscriptionTransaction(tx)) return hasValidEnd;
+
+    // Lifetime / Non-Consumable: hier existiert absichtlich kein Ablaufdatum.
     if(state === "owned" || state === "finished" || state === "verified" || tx.isAcknowledged === true) return true;
-    // Je nach Plugin-Version enthalten echte StoreKit-Receipts keinen Status.
-    // Dann akzeptieren wir nur persistente Receipt-/Transaktionsmerkmale und
-    // niemals einen gerade gestarteten/approved Kaufdialog ohne Transaktion.
-    var hasReceiptMarker = !!(tx.transactionId || tx.originalTransactionId || tx.purchaseDate || tx.lastRenewalDate || tx.expirationDate || tx.expiresDate || tx.expiresAt);
-    var hasFutureExpiry = end && !isNaN(end.getTime()) && end > new Date();
-    return !state && hasReceiptMarker && (hasFutureExpiry || (!tx.expirationDate && !tx.expiresDate && !tx.expiresAt));
+    var hasReceiptMarker = !!(tx.transactionId || tx.originalTransactionId || tx.purchaseDate || tx.lastRenewalDate);
+    return !state && hasReceiptMarker;
   }
+
   function objectContainsActiveProduct(obj, depth){
     if(!obj || depth > 5) return false;
     if(Array.isArray(obj)){
@@ -391,7 +443,9 @@
     }
     if(typeof obj !== "object") return false;
     var directId = obj.id || obj.productId || obj.product_id;
-    if(directId === PRODUCT_ID_IOS && (obj.owned === true || transactionLooksActive(obj))) return true;
+    // owned === true allein genügt bei Abonnements nicht – die Entscheidung
+    // trifft ausschließlich transactionLooksActive() (Ablaufdatum).
+    if(directId === PRODUCT_ID_IOS && transactionLooksActive(obj)) return true;
     var products = obj.products || obj.productIds || obj.product_ids;
     var hasProduct = false;
     if(Array.isArray(products)){
@@ -426,15 +480,22 @@
     debug(result ? "storekit:entitlement-found" : "storekit:entitlement-not-found", { result:!!result, productId:PRODUCT_ID_IOS });
     return !!result;
   }
-  // -------- StoreKit expiryDate -> validUntil (reines Auslesen, keine Kauflogik) --------
+  // -------- StoreKit expiryDate -> validUntil (zentrale, einzige Ablauflesefunktion) --------
   function readExpiryValue(tx){
     if(!tx || typeof tx !== "object") return null;
     var ms = tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs;
     if(ms){ var dm = new Date(Number(ms)); return isNaN(dm.getTime()) ? null : dm; }
     var raw = tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime;
-    if(!raw) return null;
-    var d = (raw instanceof Date) ? raw : new Date(typeof raw === "number" ? raw : String(raw));
-    return isNaN(d.getTime()) ? null : d;
+    if(raw){
+      var d = (raw instanceof Date) ? raw : new Date(typeof raw === "number" ? raw : String(raw));
+      return isNaN(d.getTime()) ? null : d;
+    }
+    // StoreKit liefert das Ablaufdatum in verschachtelten Strukturen (nativePurchase, renewalInfo).
+    // Diese zentrale Funktion muss ALLE bekannten Orte abdecken, damit die Entitlement-Prüfung
+    // und das validUntil-Mapping identische Daten sehen.
+    var nested = tx.nativePurchase || tx.renewalInfo || tx.purchaseInfo;
+    if(nested && typeof nested === "object") return readExpiryValue(nested);
+    return null;
   }
   function collectIosExpiry(obj, depth, acc){
     if(!obj || depth > 6 || typeof obj !== "object") return acc;
@@ -568,10 +629,10 @@
       try { console.log("[CavalyraBilling][iOS] skip demotion – recent approval"); } catch(_){}
       return;
     }
-    // Nicht demoten, solange wir noch keine Receipts von StoreKit erhalten haben
+    // Nicht demoten, solange der Receipt noch nicht vollständig geladen ist
     // (verhindert False-Free direkt nach App-Start / vor restorePurchases).
-    if(!iosBilling.receiptsSeen && !hasIosReceipts()){
-      try { console.log("[CavalyraBilling][iOS] skip demotion – no receipts loaded yet"); } catch(_){}
+    if(!isReceiptFullyLoaded()){
+      try { console.log("[CavalyraBilling][iOS] skip demotion – receipt not fully loaded yet"); } catch(_){}
       return;
     }
     // Abo abgelaufen / gekündigt / nie gekauft: nur zurückstufen,
@@ -795,6 +856,7 @@
       if(store && typeof store.restorePurchases === "function"){
         try { await store.restorePurchases(); } catch(_){}
       }
+      iosBilling.restoreCompleted = true;
       syncIosStore();
       var owned = isIosProductOwned();
       debug("checkProStatus:return", { platform:"ios", result:owned });
@@ -894,6 +956,7 @@
     if(!store) throw new Error("In-App-Käufe sind nicht verfügbar.");
     try { if(typeof store.restorePurchases === "function") await store.restorePurchases(); }
     catch(e){ throw new Error((e && e.message) ? e.message : "Wiederherstellen fehlgeschlagen."); }
+    iosBilling.restoreCompleted = true;
     syncIosStore();
     return isIosProductOwned();
   }
@@ -990,6 +1053,7 @@
     getInstallationId: getInstallationId
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
     ,dumpStoreKitDiagnostics: dumpStoreKitDiagnostics
+    ,isReceiptFullyLoaded: isReceiptFullyLoaded
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
 
