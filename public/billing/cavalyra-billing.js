@@ -317,7 +317,10 @@
   // done=false  -> es liegt (noch) kein Serverurteil vor (z. B. offline).
   var iosServerValidation = { done:false, active:false, expiresAt:"", at:0, reason:"" };
 
-  // Sucht rekursiv die Apple-Transaktions-ID im Receipt/Store.
+  // Sucht rekursiv die Apple-Transaktions-ID im Receipt/Validator-Body.
+  // Wichtig: cordova-plugin-purchase v13 übergibt dem Validator einen
+  // Request-Body, in dem die ID unter `transaction.id` liegt (nicht
+  // `transactionId`). Beide Varianten werden hier akzeptiert.
   function findTransactionId(obj, depth){
     depth = depth || 0;
     if(!obj || depth > 6) return "";
@@ -328,6 +331,13 @@
     if(typeof obj !== "object") return "";
     var direct = obj.transactionId || obj.originalTransactionId || obj.transaction_id || obj.original_transaction_id;
     if(direct && String(direct).length > 3) return String(direct);
+    // Validator-Body: { transaction: { type, id, appStoreReceipt|jwsRepresentation } }
+    if(obj.transaction && typeof obj.transaction === "object"){
+      var tt = String(obj.transaction.type || "");
+      if((tt === "ios-appstore" || tt === "apple-sk2") && obj.transaction.id && String(obj.transaction.id).length > 3){
+        return String(obj.transaction.id);
+      }
+    }
     var keys = Object.keys(obj);
     for(var k=0;k<keys.length;k++){
       if(/token|secret|password|authorization/i.test(keys[k])) continue;
@@ -336,18 +346,67 @@
     }
     return "";
   }
-  function currentIosTransactionId(sourceObj){
-    var id = findTransactionId(sourceObj, 0);
-    if(id) return id;
-    try {
-      var store = getStore();
-      if(store) id = findTransactionId(store.localReceipts || store.receipts || [], 0);
-    } catch(_){}
-    return id || "";
+
+  // Sucht die eigentliche Apple-Nutzlast:
+  //  - StoreKit 1: transaction.appStoreReceipt (base64 App-Store-Receipt)
+  //  - StoreKit 2: transaction.jwsRepresentation (signierte Transaktion)
+  function findApplePayload(obj, depth){
+    depth = depth || 0;
+    if(!obj || depth > 6) return null;
+    if(Array.isArray(obj)){
+      for(var i=0;i<obj.length;i++){ var r = findApplePayload(obj[i], depth+1); if(r) return r; }
+      return null;
+    }
+    if(typeof obj !== "object") return null;
+    if(obj.jwsRepresentation && String(obj.jwsRepresentation).length > 20){
+      return { jwsRepresentation: String(obj.jwsRepresentation) };
+    }
+    if(obj.appStoreReceipt && String(obj.appStoreReceipt).length > 20){
+      return { appStoreReceipt: String(obj.appStoreReceipt) };
+    }
+    var keys = Object.keys(obj);
+    for(var k=0;k<keys.length;k++){
+      if(/token|secret|password|authorization/i.test(keys[k])) continue;
+      var res = findApplePayload(obj[keys[k]], depth+1);
+      if(res) return res;
+    }
+    return null;
   }
 
+  // Baut die vollständige Nutzlast für die Servervalidierung.
+  function currentIosPayload(sourceObj){
+    var out = { transactionId:"", appStoreReceipt:"", jwsRepresentation:"" };
+    var sources = [sourceObj];
+    try {
+      var store = getStore();
+      if(store) sources.push(store.localReceipts || store.receipts || []);
+    } catch(_){}
+    for(var i=0;i<sources.length;i++){
+      var s = sources[i];
+      if(!s) continue;
+      if(!out.transactionId) out.transactionId = findTransactionId(s, 0) || "";
+      if(!out.appStoreReceipt && !out.jwsRepresentation){
+        var p = findApplePayload(s, 0);
+        if(p && p.jwsRepresentation) out.jwsRepresentation = p.jwsRepresentation;
+        else if(p && p.appStoreReceipt) out.appStoreReceipt = p.appStoreReceipt;
+      }
+    }
+    return out;
+  }
+  function payloadUsable(p){
+    return !!(p && (p.jwsRepresentation || p.appStoreReceipt || p.transactionId));
+  }
+  function currentIosTransactionId(sourceObj){
+    return currentIosPayload(sourceObj).transactionId;
+  }
+
+
+
   // Ruft die Edge Function auf und speichert das Urteil.
-  async function validateIosWithServer(transactionId){
+  // `input` ist entweder eine Transaktions-ID (Kompatibilität) oder die
+  // vollständige Nutzlast { transactionId, appStoreReceipt, jwsRepresentation }.
+  async function validateIosWithServer(input){
+    var payload = (typeof input === "string") ? { transactionId: input } : (input || {});
     var installationId = "";
     try { installationId = await getInstallationId(); } catch(_){}
     var headers = { "Content-Type":"application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY };
@@ -361,7 +420,9 @@
       method: "POST",
       headers: headers,
       body: JSON.stringify({
-        transactionId: transactionId,
+        transactionId: payload.transactionId || undefined,
+        appStoreReceipt: payload.appStoreReceipt || undefined,
+        jwsRepresentation: payload.jwsRepresentation || undefined,
         installation_id: installationId,
         email: getKnownEmail() || undefined
       })
@@ -391,13 +452,13 @@
   // Blockierende Validierung (für checkProStatus/restorePurchases/Kauf).
   async function validateIosNow(){
     if(!isIosApp()) return false;
-    var txId = currentIosTransactionId(null);
-    if(!txId){
+    var payload = currentIosPayload(null);
+    if(!payloadUsable(payload)){
       iosServerValidation = { done:true, active:false, expiresAt:"", at:Date.now(), reason:"no_receipt" };
       syncIosStore();
       return false;
     }
-    try { await validateIosWithServer(txId); }
+    try { await validateIosWithServer(payload); }
     catch(err){ debug("storekit:server-validation-error", { message:(err && err.message) || String(err) }); }
     syncIosStore();
     return isIosProductOwned();
@@ -408,8 +469,8 @@
   function requestIosServerValidation(sourceObj){
     if(!isIosApp()) return;
     if(_validationInFlight) return;
-    var txId = currentIosTransactionId(sourceObj);
-    if(!txId){
+    var payload = currentIosPayload(sourceObj);
+    if(!payloadUsable(payload)){
       // Kein Receipt vorhanden: Apple kennt keinen Kauf für dieses Gerät.
       if(isReceiptFullyLoaded()){
         iosServerValidation = { done:true, active:false, expiresAt:"", at:Date.now(), reason:"no_receipt" };
@@ -418,10 +479,11 @@
       return;
     }
     _validationInFlight = true;
-    validateIosWithServer(txId).catch(function(err){
+    validateIosWithServer(payload).catch(function(err){
       debug("storekit:server-validation-error", { message:(err && err.message) || String(err) });
     }).then(function(){
       _validationInFlight = false;
+
       syncIosStore();
     });
   }
@@ -489,15 +551,21 @@
         .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r }); requestIosServerValidation(r); })
         .receiptsReady(function(){ iosBilling.receiptsSeen = true; iosBilling.receiptsReadyFired = true; debug("storekit:receipts-ready", {}); requestIosServerValidation(null); });
       // ---- Endgültiger Validator: Supabase Edge Function -> Apple Server API ----
-      store.validator = function(receipt, cb){
-        var txId = findTransactionId(receipt);
-        debug("storekit:validator-called", { transactionId: txId });
-        if(!txId){
-          iosServerValidation = { done:false, active:false, expiresAt:"", at:Date.now(), reason:"no_transaction_id" };
-          try { cb({ ok:false, code:6778001, message:"Keine Transaktions-ID im Receipt." }); } catch(_){}
+      // `body` ist der v13-Validator-Request-Body:
+      //   { id, type, products, transaction: { type, id, appStoreReceipt|jwsRepresentation } }
+      store.validator = function(body, cb){
+        var payload = currentIosPayload(body);
+        debug("storekit:validator-called", {
+          transactionId: payload.transactionId,
+          hasAppStoreReceipt: !!payload.appStoreReceipt,
+          hasJws: !!payload.jwsRepresentation
+        });
+        if(!payloadUsable(payload)){
+          iosServerValidation = { done:false, active:false, expiresAt:"", at:Date.now(), reason:"no_apple_payload" };
+          try { cb({ ok:false, code:6778001, message:"Keine Apple-Nutzlast im Receipt." }); } catch(_){}
           return;
         }
-        validateIosWithServer(txId).then(function(res){
+        validateIosWithServer(payload).then(function(res){
           if(res && res.ok){
             try { cb(res.payload); } catch(_){}
           } else {
@@ -509,6 +577,7 @@
           try { cb({ ok:false, code:6778001, message:"Validierung nicht erreichbar." }); } catch(_){}
         });
       };
+
 
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;

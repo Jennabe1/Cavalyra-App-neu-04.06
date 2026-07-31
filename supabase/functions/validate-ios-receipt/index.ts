@@ -127,6 +127,72 @@ async function fetchSubscriptionStatus(
   return { httpStatus: res.status, body };
 }
 
+// StoreKit 1: das base64-App-Store-Receipt wird über /verifyReceipt aufgelöst,
+// um die originalTransactionId zu erhalten. Das Urteil selbst kommt danach
+// weiterhin ausschließlich von der App Store Server API.
+async function verifyLegacyReceipt(receiptData: string): Promise<{
+  originalTransactionId: string;
+  environment: "Production" | "Sandbox" | null;
+  status: number | null;
+  error?: string;
+}> {
+  const secret = Deno.env.get("APPLE_SHARED_SECRET") || "";
+  if (!secret) {
+    return {
+      originalTransactionId: "",
+      environment: null,
+      status: null,
+      error: "apple_shared_secret_missing",
+    };
+  }
+  const call = async (url: string) => {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        "receipt-data": receiptData,
+        password: secret,
+        "exclude-old-transactions": true,
+      }),
+    });
+    const text = await r.text();
+    try {
+      return text ? JSON.parse(text) : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  let env: "Production" | "Sandbox" = "Production";
+  let body = await call("https://buy.itunes.apple.com/verifyReceipt");
+  if (body?.status === 21007) {
+    env = "Sandbox";
+    body = await call("https://sandbox.itunes.apple.com/verifyReceipt");
+  }
+  const status = typeof body?.status === "number" ? body.status : null;
+  if (status !== 0) {
+    return {
+      originalTransactionId: "",
+      environment: env,
+      status,
+      error: "apple_receipt_invalid",
+    };
+  }
+  const list: any[] = [
+    ...(Array.isArray(body?.latest_receipt_info) ? body.latest_receipt_info : []),
+    ...(Array.isArray(body?.receipt?.in_app) ? body.receipt.in_app : []),
+  ];
+  const match = list.find((t) => t?.product_id === PRODUCT_ID) || list[0];
+  return {
+    originalTransactionId: String(
+      match?.original_transaction_id || match?.transaction_id || "",
+    ),
+    environment: env,
+    status,
+  };
+}
+
+
 function pickFromStatuses(body: any, env: "Production" | "Sandbox"): AppleLookup | null {
   const groups = Array.isArray(body?.data) ? body.data : [];
   let best: AppleLookup | null = null;
@@ -190,12 +256,22 @@ Deno.serve(async (req) => {
     return json(400, { ok: false, code: 6778001, message: "invalid_json" });
   }
 
-  const transactionId = String(body?.transactionId || body?.transaction_id || "").trim();
+  const rawTransactionId = String(body?.transactionId || body?.transaction_id || "").trim();
+  const jws = String(body?.jwsRepresentation || "").trim();
+  const appStoreReceipt = String(body?.appStoreReceipt || "").trim();
   const installationId = String(body?.installation_id || body?.installationId || "").trim();
   const email = String(body?.email || "").trim().toLowerCase();
 
-  if (!transactionId) {
-    return json(400, { ok: false, code: 6778001, message: "transaction_id_required" });
+  // Virtuelle IDs von cordova-plugin-purchase sind keine Apple-Transaktionen.
+  const isVirtual = (id: string) =>
+    !id || id === "appstore.application" || id.startsWith("virtual.");
+
+  if (!jws && !appStoreReceipt && isVirtual(rawTransactionId)) {
+    return json(400, {
+      ok: false,
+      code: 6778001,
+      message: "apple_payload_required",
+    });
   }
 
   // Optionaler JWT (Cloud-Konto). Lizenz funktioniert auch ohne Konto.
@@ -220,12 +296,57 @@ Deno.serve(async (req) => {
     return json(500, { ok: false, code: 6778001, message: "apple_credentials_invalid" });
   }
 
-  let env: "Production" | "Sandbox" = "Production";
-  let res = await fetchSubscriptionStatus(APPLE_PROD, transactionId, token);
-  if (res.httpStatus === 404 || res.body?.errorCode === 4040010) {
-    env = "Sandbox";
-    res = await fetchSubscriptionStatus(APPLE_SANDBOX, transactionId, token);
+  // Nachschlage-ID bestimmen:
+  //  - StoreKit 2: aus jwsRepresentation (signedTransactionInfo-Format)
+  //  - StoreKit 1: aus dem base64-App-Store-Receipt via verifyReceipt
+  //  - Fallback: die vom Plugin gelieferte echte Transaktions-ID
+  let lookupId = isVirtual(rawTransactionId) ? "" : rawTransactionId;
+  let envHint: "Production" | "Sandbox" | null = null;
+
+  if (jws) {
+    const p = decodeJwsPayload(jws);
+    const fromJws = String(p?.originalTransactionId || p?.transactionId || "").trim();
+    if (fromJws) lookupId = fromJws;
+    if (p?.environment === "Sandbox" || p?.environment === "Production") {
+      envHint = p.environment;
+    }
+    console.log("[validate-ios-receipt] sk2 jws decoded", {
+      hasId: !!fromJws,
+      environment: p?.environment || null,
+      productId: p?.productId || null,
+    });
+  } else if (appStoreReceipt) {
+    const legacy = await verifyLegacyReceipt(appStoreReceipt);
+    if (legacy.error) {
+      console.error("[validate-ios-receipt] verifyReceipt failed", legacy.error, legacy.status);
+      return json(200, {
+        ok: false,
+        code: 6778001,
+        message: legacy.error,
+        appleStatus: legacy.status,
+      });
+    }
+    if (legacy.originalTransactionId) lookupId = legacy.originalTransactionId;
+    if (legacy.environment) envHint = legacy.environment;
+    console.log("[validate-ios-receipt] sk1 receipt verified", {
+      hasId: !!legacy.originalTransactionId,
+      environment: legacy.environment,
+    });
   }
+
+  if (!lookupId) {
+    return json(200, { ok: false, code: 6778003, message: "no_matching_transaction" });
+  }
+
+  const firstBase = envHint === "Sandbox" ? APPLE_SANDBOX : APPLE_PROD;
+  const secondBase = envHint === "Sandbox" ? APPLE_PROD : APPLE_SANDBOX;
+  let env: "Production" | "Sandbox" = envHint === "Sandbox" ? "Sandbox" : "Production";
+  let res = await fetchSubscriptionStatus(firstBase, lookupId, token);
+  if (res.httpStatus === 404 || res.body?.errorCode === 4040010) {
+    env = env === "Sandbox" ? "Production" : "Sandbox";
+    res = await fetchSubscriptionStatus(secondBase, lookupId, token);
+  }
+
 
   if (res.httpStatus !== 200) {
     console.error("[validate-ios-receipt] apple api error", res.httpStatus, res.body);
