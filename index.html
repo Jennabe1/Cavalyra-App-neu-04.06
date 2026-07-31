@@ -2699,6 +2699,9 @@ function isLicenseExpired(lic){
    trialStart neu, sondern nutzt Status + zentrale Ablaufprüfung. */
 function licenseEntitlementActive(lic){
   if(!lic) return false;
+  // iOS: nach vollständiger StoreKit-Synchronisation ist StoreKit die einzige
+  // Quelle der Wahrheit – ein negatives Urteil übersteuert jeden lokalen Status.
+  if(isIosPlatform() && lic.storekitVerdict === "inactive") return false;
   if(isLicenseExpired(lic)) return false;
   const s = canonicalLicenseStatus(lic.status);
   return s === "pro" || s === "trial";

@@ -246,7 +246,7 @@
         window.state.license.status = "pro";
         window.state.license.pro = true;
         window.state.license.source = source || "paddle";
-      } else if(storeSources[source]){
+      } else if(storeSources[source] || source === "app_store"){
         window.state.license.status = "free";
         window.state.license.pro = false;
         window.state.license.source = source;
@@ -416,6 +416,8 @@
         t = String((p && (p.type || p.productType)) || "").toLowerCase();
       }
     } catch(_){}
+    // Auf iOS existiert ausschließlich ein Auto-Renewable-Subscription-Produkt.
+    if(isIosApp()) return true;
     if(!t) return true; // Cavalyra Pro ist ein Abo: im Zweifel strenger bewerten.
     return t.indexOf("subscription") !== -1;
   }
@@ -756,7 +758,7 @@
     if(!isIosApp()) return;
     debug("storekit:sync-start", { before:licenseSnapshot() });
     if(isIosProductOwned()){
-      applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"sync_active_entitlement" }, null));
+      applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, storekitVerdict:"active", storekitVerdictAt:new Date().toISOString(), reason:"sync_active_entitlement" }, null));
       return;
     }
     // Nicht demoten, wenn der Kauf gerade eben approved/verified wurde
@@ -771,13 +773,28 @@
       try { console.log("[CavalyraBilling][iOS] skip demotion – receipt not fully loaded yet"); } catch(_){}
       return;
     }
-    // Abo abgelaufen / gekündigt / nie gekauft: nur zurückstufen,
-    // wenn Pro zuvor über den App Store gesetzt wurde.
+    // Ab hier ist der Receipt vollständig geladen: StoreKit ist die EINZIGE
+    // Quelle der Wahrheit. Cavalyra hat auf iOS ausschließlich ein
+    // Auto-Renewable-Subscription-Produkt – gibt es dafür kein aktives
+    // Entitlement mit gültigem expirationDate, wird die lokale Lizenz
+    // zurückgestuft, UNABHÄNGIG von ihrer bisherigen source
+    // (app_store, paddle, manual, leer ...). Keine Ausnahmen mehr.
     try {
       var lic = (window.state && window.state.license) || {};
-      if(lic.source === "app_store" && (lic.status === "pro" || lic.status === "trial")){
-        debug("storekit:demoting-no-entitlement", { before:licenseSnapshot() });
-        applyProState(false, "app_store", { productId: PRODUCT_ID_IOS });
+      var st = String(lic.status || "").toLowerCase();
+      var wasActive = (st === "pro" || st === "trial" || st === "trialing" || lic.pro === true);
+      if(wasActive){
+        debug("storekit:demoting-no-entitlement", { before:licenseSnapshot(), previousSource: lic.source || "(leer)" });
+        applyProState(false, "app_store", {
+          productId: PRODUCT_ID_IOS,
+          entitlementConfirmed: false,
+          storekitVerdict: "inactive",
+          storekitVerdictAt: new Date().toISOString(),
+          reason: "storekit_no_active_entitlement",
+          previousSource: lic.source || ""
+        });
+      } else {
+        debug("storekit:no-entitlement-nothing-to-demote", { before:licenseSnapshot() });
       }
     } catch(_){}
   }
