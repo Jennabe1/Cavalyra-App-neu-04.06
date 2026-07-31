@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.check-license]
 verify_jwt = false
+
+[functions.validate-ios-receipt]
+verify_jwt = false

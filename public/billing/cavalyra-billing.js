@@ -45,6 +45,8 @@
   var SUPABASE_URL = "https://upbubifdcndfxbvmgwzg.supabase.co";
   var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc";
   var CHECK_LICENSE_URL   = SUPABASE_URL + "/functions/v1/check-license";
+  // Endgültiger StoreKit-Validator (Apple App Store Server API).
+  var VALIDATE_IOS_URL    = SUPABASE_URL + "/functions/v1/validate-ios-receipt";
   var LEGACY_LICENSE_CHECK_URL = "https://cavalyra.de/.netlify/functions/check-license";
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
   var INSTALLATION_ID_STORAGE = "cavalyra:installation_id";
@@ -310,6 +312,122 @@
     debug("storekit:purchase-approved", { productId: PRODUCT_ID_IOS });
   }
 
+  // -------- Serverseitige Validierung (einzige Wahrheit für iOS) --------
+  // Ergebnis der letzten Antwort von `validate-ios-receipt`.
+  // done=false  -> es liegt (noch) kein Serverurteil vor (z. B. offline).
+  var iosServerValidation = { done:false, active:false, expiresAt:"", at:0, reason:"" };
+
+  // Sucht rekursiv die Apple-Transaktions-ID im Receipt/Store.
+  function findTransactionId(obj, depth){
+    depth = depth || 0;
+    if(!obj || depth > 6) return "";
+    if(Array.isArray(obj)){
+      for(var i=0;i<obj.length;i++){ var r = findTransactionId(obj[i], depth+1); if(r) return r; }
+      return "";
+    }
+    if(typeof obj !== "object") return "";
+    var direct = obj.transactionId || obj.originalTransactionId || obj.transaction_id || obj.original_transaction_id;
+    if(direct && String(direct).length > 3) return String(direct);
+    var keys = Object.keys(obj);
+    for(var k=0;k<keys.length;k++){
+      if(/token|secret|password|authorization/i.test(keys[k])) continue;
+      var res = findTransactionId(obj[keys[k]], depth+1);
+      if(res) return res;
+    }
+    return "";
+  }
+  function currentIosTransactionId(sourceObj){
+    var id = findTransactionId(sourceObj, 0);
+    if(id) return id;
+    try {
+      var store = getStore();
+      if(store) id = findTransactionId(store.localReceipts || store.receipts || [], 0);
+    } catch(_){}
+    return id || "";
+  }
+
+  // Ruft die Edge Function auf und speichert das Urteil.
+  async function validateIosWithServer(transactionId){
+    var installationId = "";
+    try { installationId = await getInstallationId(); } catch(_){}
+    var headers = { "Content-Type":"application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + SUPABASE_ANON_KEY };
+    try {
+      var s = window.CavalyraSyncEngine && window.CavalyraSyncEngine.getSession && window.CavalyraSyncEngine.getSession();
+      var tok = s && s.access_token;
+      if(tok) headers["Authorization"] = "Bearer " + tok;
+    } catch(_){}
+
+    var res = await fetch(VALIDATE_IOS_URL, {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({
+        transactionId: transactionId,
+        installation_id: installationId,
+        email: getKnownEmail() || undefined
+      })
+    });
+    var body = null;
+    try { body = await res.json(); } catch(_){ body = null; }
+    debug("storekit:server-validation-response", { httpStatus:res.status, body:body });
+
+    if(body && body.ok === true){
+      iosServerValidation = { done:true, active:true, expiresAt: body.expiresAt || "", at:Date.now(), reason:"server_active" };
+      return { ok:true, payload: body };
+    }
+    // Nur ein echtes Apple-Urteil (abgelaufen/widerrufen/keine Transaktion)
+    // darf als "nicht aktiv" gelten. Technische Fehler zählen nicht.
+    var msg = (body && body.message) || "";
+    var conclusive = (msg === "subscription_expired" || msg === "no_matching_transaction");
+    iosServerValidation = {
+      done: conclusive,
+      active: false,
+      expiresAt: (body && body.expiresAt) || "",
+      at: Date.now(),
+      reason: msg || ("http_" + res.status)
+    };
+    return { ok:false, code:(body && body.code) || 6778003, message: msg || "validation_failed" };
+  }
+
+  // Blockierende Validierung (für checkProStatus/restorePurchases/Kauf).
+  async function validateIosNow(){
+    if(!isIosApp()) return false;
+    var txId = currentIosTransactionId(null);
+    if(!txId){
+      iosServerValidation = { done:true, active:false, expiresAt:"", at:Date.now(), reason:"no_receipt" };
+      syncIosStore();
+      return false;
+    }
+    try { await validateIosWithServer(txId); }
+    catch(err){ debug("storekit:server-validation-error", { message:(err && err.message) || String(err) }); }
+    syncIosStore();
+    return isIosProductOwned();
+  }
+
+  // Validierung außerhalb des Kauf-Flows anstoßen (App-Start, Restore, Resume).
+  var _validationInFlight = false;
+  function requestIosServerValidation(sourceObj){
+    if(!isIosApp()) return;
+    if(_validationInFlight) return;
+    var txId = currentIosTransactionId(sourceObj);
+    if(!txId){
+      // Kein Receipt vorhanden: Apple kennt keinen Kauf für dieses Gerät.
+      if(isReceiptFullyLoaded()){
+        iosServerValidation = { done:true, active:false, expiresAt:"", at:Date.now(), reason:"no_receipt" };
+      }
+      syncIosStore();
+      return;
+    }
+    _validationInFlight = true;
+    validateIosWithServer(txId).catch(function(err){
+      debug("storekit:server-validation-error", { message:(err && err.message) || String(err) });
+    }).then(function(){
+      _validationInFlight = false;
+      syncIosStore();
+    });
+  }
+
+
+
   function initIosBilling(){
     if(iosBilling.initStarted || !isIosApp()) return;
     iosBilling.initStarted = true;
@@ -327,42 +445,71 @@
         platform: iosPlatform()
       }]);
       store.when()
+        // Offizielles v13-Muster: approved -> verify() (KEIN Unlock hier).
         .approved(function(t){
           try {
             markIosApproved();
             debug("storekit:purchase-approved-callback", { transaction:t });
-            // StoreKit hat den Kauf bereits gegenüber Apple bestätigt, bevor
-            // .approved() feuert. Pro sofort freischalten, damit der Nutzer
-            // nicht auf .verified() warten muss (bei CdvPurchase v13 feuert
-            // .verified() nur, wenn store.validator ein Success-Payload liefert).
-            applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_approved" }, t));
             if(t && typeof t.verify === "function") { try { t.verify(); } catch(_){} }
             else { try { if(t && t.finish) t.finish(); } catch(_){} }
-            setTimeout(syncIosStore, 2000);
           } catch(e){ debug("storekit:approved-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
+        // Entitlement wird ausschließlich hier erteilt – mit dem vom Server
+        // (Apple App Store Server API) bestätigten Ablaufdatum.
         .verified(function(r){
           try{
-            debug("storekit:purchase-verified-callback", { receipt:r });
+            debug("storekit:purchase-verified-callback", { receipt:r, serverVerdict:iosServerValidation });
             markIosApproved();
-            applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"storekit_verified" }, r));
+            if(iosServerValidation.done && iosServerValidation.active){
+              applyProState(true, "app_store", {
+                productId: PRODUCT_ID_IOS,
+                entitlementConfirmed: true,
+                storekitVerdict: "active",
+                storekitVerdictAt: new Date().toISOString(),
+                validUntil: iosServerValidation.expiresAt,
+                expiresAt: iosServerValidation.expiresAt,
+                validUntilSource: "apple_server",
+                reason: "server_verified"
+              });
+            }
             try{ if(r && r.finish) r.finish(); }catch(_){ }
-            setTimeout(syncIosStore, 4000);
           }catch(e){ debug("storekit:verified-handler-error", { message:e && e.message ? e.message : String(e) }); }
         })
+        // Server hat das Abo abgelehnt/als abgelaufen gemeldet.
+        .unverified(function(rv){
+          try{
+            debug("storekit:purchase-unverified-callback", { payload:rv, serverVerdict:iosServerValidation });
+            syncIosStore();
+          }catch(_){}
+        })
+        .finished(function(tr){
+          try{ debug("storekit:transaction-finished", { transaction:tr }); syncIosStore(); }catch(_){}
+        })
         .productUpdated(function(p){ debug("storekit:product-updated", { product:p }); syncIosStore(); })
-        .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r, entitlement:hasValidatedIosEntitlement(r) }); syncIosStore(); })
-        .receiptsReady(function(){ iosBilling.receiptsSeen = true; iosBilling.receiptsReadyFired = true; debug("storekit:receipts-ready", { entitlement:hasValidatedIosEntitlement() }); syncIosStore(); });
+        .receiptUpdated(function(r){ iosBilling.receiptsSeen = true; debug("storekit:receipt-updated", { receipt:r }); requestIosServerValidation(r); })
+        .receiptsReady(function(){ iosBilling.receiptsSeen = true; iosBilling.receiptsReadyFired = true; debug("storekit:receipts-ready", {}); requestIosServerValidation(null); });
+      // ---- Endgültiger Validator: Supabase Edge Function -> Apple Server API ----
       store.validator = function(receipt, cb){
-        // CdvPurchase v13 erwartet ein ValidatorResponse-Payload (Objekt),
-        // kein Boolean. Ein `true`-Boolean führt dazu, dass der Transition
-        // nach `verified` nie sauber durchläuft.
-        debug("storekit:validator-called", { receipt:receipt, localValidator:true });
-        try {
-          var payload = { ok: true, data: { transaction: receipt || {} } };
-          cb(payload);
-        } catch(_){ try { cb({ ok:false, code: 6778003, message: "Local validator error" }); } catch(__){} }
+        var txId = findTransactionId(receipt);
+        debug("storekit:validator-called", { transactionId: txId });
+        if(!txId){
+          iosServerValidation = { done:false, active:false, expiresAt:"", at:Date.now(), reason:"no_transaction_id" };
+          try { cb({ ok:false, code:6778001, message:"Keine Transaktions-ID im Receipt." }); } catch(_){}
+          return;
+        }
+        validateIosWithServer(txId).then(function(res){
+          if(res && res.ok){
+            try { cb(res.payload); } catch(_){}
+          } else {
+            try { cb({ ok:false, code:(res && res.code) || 6778003, message:(res && res.message) || "Validierung fehlgeschlagen." }); } catch(_){}
+          }
+          syncIosStore();
+        }).catch(function(err){
+          debug("storekit:validator-network-error", { message:(err && err.message) || String(err) });
+          try { cb({ ok:false, code:6778001, message:"Validierung nicht erreichbar." }); } catch(_){}
+        });
       };
+
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
         debug("storekit:initialized", { productId: PRODUCT_ID_IOS });
@@ -370,21 +517,29 @@
           store.restorePurchases().then(function(){
             iosBilling.restoreCompleted = true;
             debug("storekit:restore-completed", { receiptFullyLoaded: isReceiptFullyLoaded() });
-            syncIosStore();
+            requestIosServerValidation(null);
           }).catch(function(err){
             iosBilling.restoreCompleted = true;
             debug("storekit:restore-failed", { message:(err && err.message) || String(err), receiptFullyLoaded: isReceiptFullyLoaded() });
-            syncIosStore();
+            requestIosServerValidation(null);
           });
         } else {
           iosBilling.restoreCompleted = true;
-          syncIosStore();
+          requestIosServerValidation(null);
         }
-        setTimeout(syncIosStore, 2000);
+        setTimeout(function(){ requestIosServerValidation(null); }, 2000);
       }).catch(function(err){
         iosBilling.initError = (err && err.message) || String(err);
         debug("storekit:init-failed", { message: iosBilling.initError });
       });
+      // Automatische Verlängerung / Ablauf: bei jedem App-Resume erneut
+      // gegen Apple validieren (einziger Refresh-Pfad auf iOS).
+      try {
+        var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
+        if(App && App.addListener){
+          App.addListener("resume", function(){ requestIosServerValidation(null); });
+        }
+      } catch(_){}
     } catch(e){ iosBilling.initError = e && e.message ? e.message : String(e); }
   }
 
@@ -399,200 +554,89 @@
       return !!(receipts && receipts.length);
     } catch(_){ return false; }
   }
-  /* Einzige Verantwortung: Produkttyp bestimmen (Abo vs. Einmalkauf/Lifetime).
-     Quelle ist zuerst die Transaktion selbst, danach das StoreKit-Produkt. */
-  function isSubscriptionTransaction(tx){
-    var t = "";
-    try {
-      t = String((tx && (tx.type || tx.productType || tx.product_type)) || "").toLowerCase();
-      if(!t){
-        var p = getIosProduct();
-        t = String((p && (p.type || p.productType)) || "").toLowerCase();
-      }
-    } catch(_){}
-    // Auf iOS existiert ausschließlich ein Auto-Renewable-Subscription-Produkt.
-    if(isIosApp()) return true;
-    if(!t) return true; // Cavalyra Pro ist ein Abo: im Zweifel strenger bewerten.
-    return t.indexOf("subscription") !== -1;
-  }
-  function transactionLooksActive(tx){
-    if(!tx) return false;
-    var state = String(tx.state || tx.transactionState || tx.status || "").toLowerCase();
-    if(state === "initiated" || state === "pending" || state === "approved") return false;
-    if(state && !(state === "owned" || state === "finished" || state === "verified")) return false;
-    if(tx.isConsumed === true || tx.revoked === true || tx.isRevoked === true) return false;
-    // Zentrale Ablaufprüfung: dieselbe Logik wie beim validUntil-Mapping.
-    var end = readExpiryValue(tx);
-    var hasValidEnd = !!(end && !isNaN(end.getTime()));
-    if(hasValidEnd && end <= new Date()) return false;
-
-    // Auto-Renewable Subscription: ausschließlich das Ablaufdatum entscheidet.
-    // owned/finished/verified allein genügt hier niemals.
-    if(isSubscriptionTransaction(tx)) return hasValidEnd;
-
-    // Lifetime / Non-Consumable: hier existiert absichtlich kein Ablaufdatum.
-    if(state === "owned" || state === "finished" || state === "verified" || tx.isAcknowledged === true) return true;
-    var hasReceiptMarker = !!(tx.transactionId || tx.originalTransactionId || tx.purchaseDate || tx.lastRenewalDate);
-    return !state && hasReceiptMarker;
-  }
-
-  function objectContainsActiveProduct(obj, depth){
-    if(!obj || depth > 5) return false;
-    if(Array.isArray(obj)){
-      for(var i=0;i<obj.length;i++){ if(objectContainsActiveProduct(obj[i], depth + 1)) return true; }
-      return false;
-    }
-    if(typeof obj !== "object") return false;
-    var directId = obj.id || obj.productId || obj.product_id;
-    // owned === true allein genügt bei Abonnements nicht – die Entscheidung
-    // trifft ausschließlich transactionLooksActive() (Ablaufdatum).
-    if(directId === PRODUCT_ID_IOS && transactionLooksActive(obj)) return true;
-    var products = obj.products || obj.productIds || obj.product_ids;
-    var hasProduct = false;
-    if(Array.isArray(products)){
-      for(var p=0;p<products.length;p++){
-        var item = products[p];
-        if(item === PRODUCT_ID_IOS || (item && (item.id === PRODUCT_ID_IOS || item.productId === PRODUCT_ID_IOS))){ hasProduct = true; break; }
-      }
-    }
-    if(hasProduct && transactionLooksActive(obj)) return true;
-    var keys = Object.keys(obj);
-    for(var k=0;k<keys.length;k++){
-      var key = keys[k];
-      if(/token|secret|password|authorization/i.test(key)) continue;
-      if(objectContainsActiveProduct(obj[key], depth + 1)) return true;
-    }
-    return false;
-  }
-  function hasValidatedIosEntitlement(sourceObj){
-    var CdvPurchase = window.CdvPurchase; var store = getStore();
-    var result = false;
-    if(store && CdvPurchase){
-      // store.owned/product.owned können während des Kauf-Flows optimistisch
-      // gesetzt werden. Für Pro zählt nur ein bestätigtes Receipt/Transaction.
-      try { if(!result && sourceObj && objectContainsActiveProduct(sourceObj, 0)) result = true; } catch(_){}
-      try {
-        if(!result){
-          var receipts = store.localReceipts || store.receipts || [];
-          result = objectContainsActiveProduct(receipts, 0);
-        }
-      } catch(_){}
-    }
-    debug(result ? "storekit:entitlement-found" : "storekit:entitlement-not-found", { result:!!result, productId:PRODUCT_ID_IOS });
-    return !!result;
-  }
-  // -------- StoreKit expiryDate -> validUntil (zentrale, einzige Ablauflesefunktion) --------
-  function readExpiryValue(tx){
-    if(!tx || typeof tx !== "object") return null;
-    var ms = tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs;
-    if(ms){ var dm = new Date(Number(ms)); return isNaN(dm.getTime()) ? null : dm; }
-    var raw = tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime;
-    if(raw){
-      var d = (raw instanceof Date) ? raw : new Date(typeof raw === "number" ? raw : String(raw));
-      return isNaN(d.getTime()) ? null : d;
-    }
-    // StoreKit liefert das Ablaufdatum in verschachtelten Strukturen (nativePurchase, renewalInfo).
-    // Diese zentrale Funktion muss ALLE bekannten Orte abdecken, damit die Entitlement-Prüfung
-    // und das validUntil-Mapping identische Daten sehen.
-    var nested = tx.nativePurchase || tx.renewalInfo || tx.purchaseInfo;
-    if(nested && typeof nested === "object") return readExpiryValue(nested);
-    return null;
-  }
-  function collectIosExpiry(obj, depth, acc){
-    if(!obj || depth > 6 || typeof obj !== "object") return acc;
-    if(Array.isArray(obj)){
-      for(var i=0;i<obj.length;i++) collectIosExpiry(obj[i], depth+1, acc);
-      return acc;
-    }
-    var directId = obj.id || obj.productId || obj.product_id;
-    var products = obj.products || obj.productIds || obj.product_ids;
-    var hasProduct = directId === PRODUCT_ID_IOS;
-    if(!hasProduct && Array.isArray(products)){
-      for(var p=0;p<products.length;p++){
-        var item = products[p];
-        if(item === PRODUCT_ID_IOS || (item && (item.id === PRODUCT_ID_IOS || item.productId === PRODUCT_ID_IOS))){ hasProduct = true; break; }
-      }
-    }
-    if(hasProduct){
-      var d = readExpiryValue(obj);
-      if(d && (!acc.value || d.getTime() > acc.value.getTime())) acc.value = d;
-    }
-    var keys = Object.keys(obj);
-    for(var k=0;k<keys.length;k++){
-      var key = keys[k];
-      if(/token|secret|password|authorization/i.test(key)) continue;
-      collectIosExpiry(obj[key], depth+1, acc);
-    }
-    return acc;
-  }
-  // Liefert das aktuellste von StoreKit gemeldete Ablaufdatum als ISO-String.
-  function getIosExpiryDate(sourceObj){
-    var acc = { value:null };
-    try { if(sourceObj) collectIosExpiry(sourceObj, 0, acc); } catch(_){}
-    try {
-      var store = getStore();
-      if(store) collectIosExpiry(store.localReceipts || store.receipts || [], 0, acc);
-    } catch(_){}
-    return acc.value ? acc.value.toISOString() : "";
-  }
-  // Hängt validUntil nur an, wenn StoreKit tatsächlich ein Datum liefert.
-  function withIosExpiry(extra, sourceObj){
-    var out = extra || {};
-    var iso = getIosExpiryDate(sourceObj);
-    if(iso){ out.validUntil = iso; out.expiresAt = iso; out.validUntilSource = "storekit"; }
-    else { debug("storekit:no-expiry-date", { productId: PRODUCT_ID_IOS }); }
-    return out;
-  }
+  /* Einzige iOS-Entitlement-Quelle: das Urteil der Edge Function
+     `validate-ios-receipt` (Apple App Store Server API). Lokale Receipts
+     enthalten kein verlaessliches Ablaufdatum und werden ausschliesslich
+     benutzt, um die Transaktions-ID an den Server zu uebergeben. */
   function isIosProductOwned(){
-    var owned = hasValidatedIosEntitlement();
-    debug("hasActiveIosEntitlement:return", { result:owned });
+    var owned = !!(iosServerValidation.done && iosServerValidation.active);
+    debug("hasActiveIosEntitlement:return", { result:owned, reason:iosServerValidation.reason || "" });
     return owned;
   }
+  function iosServerExtra(reason){
+    return {
+      productId: PRODUCT_ID_IOS,
+      entitlementConfirmed: true,
+      storekitVerdict: "active",
+      storekitVerdictAt: new Date().toISOString(),
+      validUntil: iosServerValidation.expiresAt,
+      expiresAt: iosServerValidation.expiresAt,
+      validUntilSource: "apple_server",
+      reason: reason
+    };
+  }
 
+
+  // Einzige iOS-Entscheidungsstelle im Billing-Layer.
+  // Reihenfolge:
+  //   1. Serverurteil aktiv  -> Pro mit Server-Ablaufdatum.
+  //   2. Serverurteil negativ (abgelaufen/widerrufen/kein Kauf) -> Demotion.
+  //   3. Kein Serverurteil (offline / Fehler) -> zuletzt validiertes
+  //      validUntil gilt weiter; abgelaufen => Demotion.
   function syncIosStore(){
     if(!isIosApp()) return;
-    debug("storekit:sync-start", { before:licenseSnapshot() });
-    if(isIosProductOwned()){
-      applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, storekitVerdict:"active", storekitVerdictAt:new Date().toISOString(), reason:"sync_active_entitlement" }, null));
+    debug("storekit:sync-start", { before:licenseSnapshot(), serverVerdict:iosServerValidation });
+
+    if(iosServerValidation.done && iosServerValidation.active){
+      applyProState(true, "app_store", {
+        productId: PRODUCT_ID_IOS,
+        entitlementConfirmed: true,
+        storekitVerdict: "active",
+        storekitVerdictAt: new Date().toISOString(),
+        validUntil: iosServerValidation.expiresAt,
+        expiresAt: iosServerValidation.expiresAt,
+        validUntilSource: "apple_server",
+        reason: "server_active_entitlement"
+      });
       return;
     }
-    // Nicht demoten, wenn der Kauf gerade eben approved/verified wurde
-    // (Receipt braucht auf StoreKit-Seite kurz, bis er lokal auftaucht).
-    if(iosBilling.lastApprovedAt && (Date.now() - iosBilling.lastApprovedAt) < 60000){
-      try { console.log("[CavalyraBilling][iOS] skip demotion – recent approval"); } catch(_){}
-      return;
-    }
-    // Nicht demoten, solange der Receipt noch nicht vollständig geladen ist
-    // (verhindert False-Free direkt nach App-Start / vor restorePurchases).
-    if(!isReceiptFullyLoaded()){
-      try { console.log("[CavalyraBilling][iOS] skip demotion – receipt not fully loaded yet"); } catch(_){}
-      return;
-    }
-    // Ab hier ist der Receipt vollständig geladen: StoreKit ist die EINZIGE
-    // Quelle der Wahrheit. Cavalyra hat auf iOS ausschließlich ein
-    // Auto-Renewable-Subscription-Produkt – gibt es dafür kein aktives
-    // Entitlement mit gültigem expirationDate, wird die lokale Lizenz
-    // zurückgestuft, UNABHÄNGIG von ihrer bisherigen source
-    // (app_store, paddle, manual, leer ...). Keine Ausnahmen mehr.
-    try {
-      var lic = (window.state && window.state.license) || {};
-      var st = String(lic.status || "").toLowerCase();
-      var wasActive = (st === "pro" || st === "trial" || st === "trialing" || lic.pro === true);
-      if(wasActive){
-        debug("storekit:demoting-no-entitlement", { before:licenseSnapshot(), previousSource: lic.source || "(leer)" });
-        applyProState(false, "app_store", {
-          productId: PRODUCT_ID_IOS,
-          entitlementConfirmed: false,
-          storekitVerdict: "inactive",
-          storekitVerdictAt: new Date().toISOString(),
-          reason: "storekit_no_active_entitlement",
-          previousSource: lic.source || ""
-        });
-      } else {
-        debug("storekit:no-entitlement-nothing-to-demote", { before:licenseSnapshot() });
+
+    var lic = (window.state && window.state.license) || {};
+    var st = String(lic.status || "").toLowerCase();
+    var wasActive = (st === "pro" || st === "trial" || st === "trialing" || lic.pro === true);
+
+    if(!iosServerValidation.done){
+      // Kein Serverurteil: Kauf ganz frisch? Dann abwarten.
+      if(iosBilling.lastApprovedAt && (Date.now() - iosBilling.lastApprovedAt) < 60000){
+        try { console.log("[CavalyraBilling][iOS] warte auf Serverurteil – frischer Kauf"); } catch(_){}
+        return;
       }
-    } catch(_){}
+      // Offline-Verhalten: zuletzt serverseitig validiertes Ablaufdatum gilt.
+      var until = lic.validUntil || lic.expiresAt || "";
+      var d = until ? new Date(until) : null;
+      if(d && !isNaN(d.getTime()) && d.getTime() > Date.now()){
+        debug("storekit:offline-cache-valid", { validUntil:until });
+        return;
+      }
+      if(!wasActive){ debug("storekit:no-verdict-nothing-to-demote", {}); return; }
+      debug("storekit:demoting-cache-expired", { validUntil:until, reason:iosServerValidation.reason });
+    }
+
+    if(wasActive){
+      debug("storekit:demoting-no-entitlement", { before:licenseSnapshot(), previousSource: lic.source || "(leer)", reason:iosServerValidation.reason });
+      applyProState(false, "app_store", {
+        productId: PRODUCT_ID_IOS,
+        entitlementConfirmed: false,
+        storekitVerdict: "inactive",
+        storekitVerdictAt: new Date().toISOString(),
+        reason: "server_no_active_entitlement:" + (iosServerValidation.reason || ""),
+        previousSource: lic.source || ""
+      });
+    } else {
+      debug("storekit:no-entitlement-nothing-to-demote", { before:licenseSnapshot() });
+    }
   }
+
 
   // -------------------- Android (Paddle) --------------------
   function getKnownEmail(){
@@ -805,7 +849,7 @@
         try { await store.restorePurchases(); } catch(_){}
       }
       iosBilling.restoreCompleted = true;
-      syncIosStore();
+      await validateIosNow();
       var owned = isIosProductOwned();
       debug("checkProStatus:return", { platform:"ios", result:owned });
       return owned;
@@ -830,7 +874,7 @@
     // Bereits Pro? Dann keinen zweiten Kaufdialog öffnen.
     try {
       if(isIosProductOwned()){
-        applyProState(true, "app_store", withIosExpiry({ productId: PRODUCT_ID_IOS, entitlementConfirmed:true, reason:"already_owned_before_purchase" }, null));
+        applyProState(true, "app_store", iosServerExtra("already_owned_before_purchase"));
         return true;
       }
     } catch(_){}
@@ -887,7 +931,7 @@
         await new Promise(function(r){ setTimeout(r, 400); });
         tries++;
       }
-      syncIosStore();
+      if(!isIosProductOwned()) await validateIosNow();
       var ok = isIosProductOwned();
       debug(ok ? "storekit:purchase-success" : "storekit:purchase-not-completed-yet", { productId:PRODUCT_ID_IOS, tries:tries, entitlement:ok });
       return ok;
@@ -915,7 +959,7 @@
     try { if(typeof store.restorePurchases === "function") await store.restorePurchases(); }
     catch(e){ throw new Error((e && e.message) ? e.message : "Wiederherstellen fehlgeschlagen."); }
     iosBilling.restoreCompleted = true;
-    syncIosStore();
+    await validateIosNow();
     return isIosProductOwned();
   }
 
@@ -1009,7 +1053,7 @@
     getProductInfo: getProductInfo,
     openProWebsite: openProWebsite,
     getInstallationId: getInstallationId
-    ,hasActiveIosEntitlement: hasValidatedIosEntitlement
+    ,hasActiveIosEntitlement: isIosProductOwned
     ,isReceiptFullyLoaded: isReceiptFullyLoaded
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
