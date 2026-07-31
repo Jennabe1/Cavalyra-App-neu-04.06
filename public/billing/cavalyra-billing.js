@@ -1075,8 +1075,30 @@
     if(!offer) throw new Error("Es ist aktuell kein Angebot für das Pro-Abo verfügbar.");
     try {
       debug("storekit:purchase-started", { productId:PRODUCT_ID_IOS, offer:offer });
-      var order = offer.order ? offer.order() : getStore().order(offer);
-      await order;
+      // WICHTIG: cdv-purchase v13 wirft bei einem fehlgeschlagenen order() KEINE
+      // Exception, sondern resolved mit einem IapError-Objekt ({ isError:true, code, message }).
+      // Bisher wurde dieses Ergebnis ignoriert -> der Kaufdialog erschien nie,
+      // die App meldete aber "Kauf gestartet". Deshalb wird das Ergebnis jetzt geprüft.
+      var orderResult = await (offer.order ? offer.order() : getStore().order(offer));
+      if(orderResult && (orderResult.isError === true || orderResult.code != null || orderResult.message)){
+        debug("storekit:order-returned-error", { code: orderResult.code, message: orderResult.message });
+        // Zweiter Versuch über store.order(offer), falls der Offer-Aufruf scheiterte.
+        var st = getStore();
+        if(offer.order && st && typeof st.order === "function"){
+          var retry = await st.order(offer);
+          if(!(retry && (retry.isError === true || retry.code != null || retry.message))){
+            orderResult = null;
+          } else {
+            debug("storekit:order-retry-error", { code: retry.code, message: retry.message });
+            orderResult = retry;
+          }
+        }
+        if(orderResult){
+          throw new Error("Apple-Kaufdialog konnte nicht geöffnet werden"
+            + (orderResult.code != null ? " (Code " + orderResult.code + ")" : "")
+            + (orderResult.message ? ": " + orderResult.message : "."));
+        }
+      }
       debug("storekit:purchase-order-returned", { productId:PRODUCT_ID_IOS, entitlement:isIosProductOwned() });
       var tries = 0;
       while(tries < 25 && !isIosProductOwned()){
@@ -1091,6 +1113,7 @@
       debug("storekit:purchase-failed-or-cancelled", { message:e && e.message ? e.message : String(e) });
       throw new Error((e && e.message) ? e.message : "Kauf konnte nicht gestartet werden.");
     }
+
   }
 
   async function restorePurchases(){
@@ -1242,28 +1265,27 @@
   function isIos(){ return window.CavalyraBilling && window.CavalyraBilling.isIosApp(); }
   function isAndroid(){ return window.CavalyraBilling && window.CavalyraBilling.isAndroidApp(); }
 
-  // Zentrale, globale Funktion für alle "Pro freischalten"-Buttons.
+  // Zentrale, globale Funktion für alle "Pro freischalten"-Buttons in gesperrten Bereichen.
   // Auf Android öffnet sie ausschließlich die Website https://cavalyra.de/pro.
-  // Auf iOS bleibt der StoreKit-Kauf aktiv. Im Web navigiert sie zum Pro-Tab.
+  // Auf iOS und im Web navigiert sie zum Pro-Tab (dort startet der Nutzer den Kauf
+  // bewusst über "Kostenlos testen"). Der Button darf NIE selbst StoreKit auslösen,
+  // sonst wirkt er wirkungslos, wenn StoreKit den Dialog nicht öffnet.
   window.openProWebsite = async function(){
     try {
       if(isAndroid() && window.CavalyraBilling && typeof window.CavalyraBilling.openProWebsite === "function"){
         await window.CavalyraBilling.openProWebsite();
         return false;
       }
-      if(isIos() && window.CavalyraBilling && typeof window.CavalyraBilling.startProPurchase === "function"){
-        await window.CavalyraBilling.startProPurchase();
-        return false;
-      }
-      // Web / Desktop: einfach zum Pro-Tab wechseln.
       if(typeof window.navigate === "function"){ window.navigate("pro"); }
       else { location.hash = "#pro"; }
     } catch(e){
       console.error("[openProWebsite]", e);
+      try { location.hash = "#pro"; } catch(_){}
       if(window.toast) window.toast(e && e.message ? e.message : "Pro-Seite konnte nicht geöffnet werden.");
     }
     return false;
   };
+
 
   window.cavalyraNativeBuyPro = async function(){
     var btn = document.getElementById("nativeBuyProBtn");
