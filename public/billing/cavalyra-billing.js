@@ -1075,17 +1075,76 @@
     if(!offer) throw new Error("Es ist aktuell kein Angebot für das Pro-Abo verfügbar.");
     try {
       debug("storekit:purchase-started", { productId:PRODUCT_ID_IOS, offer:offer });
-      // WICHTIG: cdv-purchase v13 wirft bei einem fehlgeschlagenen order() KEINE
-      // Exception, sondern resolved mit einem IapError-Objekt ({ isError:true, code, message }).
-      // Bisher wurde dieses Ergebnis ignoriert -> der Kaufdialog erschien nie,
-      // die App meldete aber "Kauf gestartet". Deshalb wird das Ergebnis jetzt geprüft.
-      var orderResult = await (offer.order ? offer.order() : getStore().order(offer));
+      // --- Diagnose: exakter Rückgabewert von order() erfassen (read-only) ---
+      function describeOrderResult(res){
+        var out = { type: (res === undefined ? "undefined" : (res === null ? "null" : typeof res)) };
+        if(res && typeof res === "object"){
+          out.isError = res.isError;
+          out.code = (res.code && typeof res.code === "object") ? (res.code.value != null ? res.code.value : JSON.stringify(res.code)) : res.code;
+          out.message = res.message;
+          out.name = res.name;
+          out.constructorName = res.constructor && res.constructor.name;
+          try { out.ownKeys = Object.keys(res); } catch(_){}
+          try {
+            out.json = JSON.parse(JSON.stringify(res, function(k, v){
+              return (typeof v === "function") ? "[fn]" : v;
+            }));
+          } catch(e){ out.json = "unserializable: " + (e && e.message); }
+          try { out.stringified = String(res); } catch(_){}
+        } else {
+          out.value = res;
+        }
+        return out;
+      }
+      function recordOrder(stage, res, ctx){
+        var entry = {
+          at: new Date().toISOString(),
+          stage: stage,
+          productId: PRODUCT_ID_IOS,
+          offerId: offer && (offer.id || offer.offerId || null),
+          offerType: offer && (offer.type || null),
+          productOwned: (function(){ try { return isIosProductOwned(); } catch(_){ return "err"; } })(),
+          productCanPurchase: product && product.canPurchase,
+          productState: product && product.state,
+          storeReady: iosBilling.ready,
+          restoreCompleted: iosBilling.restoreCompleted,
+          receiptFullyLoaded: (function(){ try { return isReceiptFullyLoaded(); } catch(_){ return "err"; } })(),
+          result: describeOrderResult(res),
+          context: ctx || null
+        };
+        iosBilling.lastOrderResult = entry;
+        try {
+          var log = JSON.parse(localStorage.getItem("cavalyra:order:trace") || "[]");
+          log.push(entry);
+          while(log.length > 20) log.shift();
+          localStorage.setItem("cavalyra:order:trace", JSON.stringify(log));
+        } catch(_){}
+        try { console.log("[CavalyraBilling][Order-Trace]", stage, JSON.stringify(entry, null, 2)); } catch(_){ }
+        debug("storekit:order-trace", entry);
+        return entry;
+      }
+
+      var orderResult;
+      try {
+        orderResult = await (offer.order ? offer.order() : getStore().order(offer));
+        recordOrder("offer.order:resolved", orderResult);
+      } catch(orderThrown){
+        recordOrder("offer.order:threw", orderThrown, { thrown:true });
+        throw orderThrown;
+      }
       if(orderResult && (orderResult.isError === true || orderResult.code != null || orderResult.message)){
         debug("storekit:order-returned-error", { code: orderResult.code, message: orderResult.message });
         // Zweiter Versuch über store.order(offer), falls der Offer-Aufruf scheiterte.
         var st = getStore();
         if(offer.order && st && typeof st.order === "function"){
-          var retry = await st.order(offer);
+          var retry;
+          try {
+            retry = await st.order(offer);
+            recordOrder("store.order:resolved", retry, { retry:true });
+          } catch(retryThrown){
+            recordOrder("store.order:threw", retryThrown, { retry:true, thrown:true });
+            throw retryThrown;
+          }
           if(!(retry && (retry.isError === true || retry.code != null || retry.message))){
             orderResult = null;
           } else {
@@ -1099,6 +1158,7 @@
             + (orderResult.message ? ": " + orderResult.message : "."));
         }
       }
+
       debug("storekit:purchase-order-returned", { productId:PRODUCT_ID_IOS, entitlement:isIosProductOwned() });
       var tries = 0;
       while(tries < 25 && !isIosProductOwned()){
@@ -1232,6 +1292,8 @@
     ,traceLicenseDecision: traceLicenseDecision
     ,getLicenseTraceLog: function(){ try { return JSON.parse(localStorage.getItem("cavalyra:license:trace") || "[]"); } catch(_){ return []; } }
     ,isReceiptFullyLoaded: isReceiptFullyLoaded
+    ,getLastOrderResult: function(){ try { return iosBilling.lastOrderResult || null; } catch(_){ return null; } }
+    ,getOrderTraceLog: function(){ try { return JSON.parse(localStorage.getItem("cavalyra:order:trace") || "[]"); } catch(_){ return []; } }
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
 
