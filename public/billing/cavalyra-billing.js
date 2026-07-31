@@ -964,22 +964,26 @@
       product = getIosProduct();
     }
     if(!product) throw new Error("Das Pro-Abo (" + PRODUCT_ID_IOS + ") konnte nicht vom App Store geladen werden.");
+    // WICHTIG (cordova-plugin-purchase v13, AppleAppStore.Adapter.order):
+    // Jede Offer, deren id !== DEFAULT_OFFER_ID ('$') ist, gilt als
+    // Discount-Offer und benötigt `additionalData.appStore.discount`
+    // (von Apple signiert). Fehlt das, bricht order() SOFORT mit
+    // MISSING_OFFER_PARAMS ab, OHNE StoreKit zu erreichen -> kein Kaufdialog.
+    // Die kostenlose Testphase steckt bei einem Standardkauf bereits in der
+    // Default-Offer (Phase 0) und wird von Apple automatisch gewährt.
+    // Deshalb wird ausschließlich die Default-Offer bestellt.
     var offers = (product.offers && product.offers.length) ? product.offers : [];
-    function hasTrial(o){
-      if(!o) return false;
-      var idStr = ((o.id||"") + " " + (o.offerId||"") + " " + (o.offerToken||"")).toLowerCase();
-      if(idStr.indexOf("trial") !== -1) return true;
-      var phases = o.pricingPhases || [];
-      for(var i=0;i<phases.length;i++){
-        var m = phases[i].priceMicros != null ? phases[i].priceMicros : phases[i].price_amount_micros;
-        if(m === 0 || m === "0") return true;
-      }
-      return false;
-    }
+    var DEFAULT_OFFER_ID = "$";
     var offer = null;
-    for(var i=0;i<offers.length;i++){ if(hasTrial(offers[i])){ offer = offers[i]; break; } }
-    if(!offer) offer = (typeof product.getOffer === "function") ? product.getOffer() : offers[0];
-    if(!offer) throw new Error("Es ist aktuell kein Angebot für das Pro-Abo verfügbar.");
+    for(var i=0;i<offers.length;i++){
+      if(offers[i] && offers[i].id === DEFAULT_OFFER_ID){ offer = offers[i]; break; }
+    }
+    if(!offer && typeof product.getOffer === "function"){
+      var g = product.getOffer();
+      if(g && g.id === DEFAULT_OFFER_ID) offer = g;
+    }
+    if(!offer) throw new Error("Es ist aktuell kein bestellbares Standard-Angebot für das Pro-Abo verfügbar.");
+
     try {
       debug("storekit:purchase-started", { productId:PRODUCT_ID_IOS, offerId: offer && (offer.id || offer.offerId || null) });
       // CdvPurchase v13: order() liefert im Fehlerfall ein IapError-Objekt
@@ -1166,14 +1170,17 @@
   function isAndroid(){ return window.CavalyraBilling && window.CavalyraBilling.isAndroidApp(); }
 
   // Zentrale, globale Funktion für alle "Pro freischalten"-Buttons in gesperrten Bereichen.
-  // Auf Android öffnet sie ausschließlich die Website https://cavalyra.de/pro.
-  // Auf iOS und im Web navigiert sie zum Pro-Tab (dort startet der Nutzer den Kauf
-  // bewusst über "Kostenlos testen"). Der Button darf NIE selbst StoreKit auslösen,
-  // sonst wirkt er wirkungslos, wenn StoreKit den Dialog nicht öffnet.
+  // Android: öffnet ausschließlich die Website https://cavalyra.de/pro.
+  // iOS: startet direkt den StoreKit-Kauf (Verhalten wie vor v150).
+  // Web: navigiert zum Pro-Tab.
   window.openProWebsite = async function(){
     try {
       if(isAndroid() && window.CavalyraBilling && typeof window.CavalyraBilling.openProWebsite === "function"){
         await window.CavalyraBilling.openProWebsite();
+        return false;
+      }
+      if(isIos() && typeof window.cavalyraNativeBuyPro === "function"){
+        await window.cavalyraNativeBuyPro();
         return false;
       }
       if(typeof window.navigate === "function"){ window.navigate("pro"); }
@@ -1188,6 +1195,7 @@
 
 
   window.cavalyraNativeBuyPro = async function(){
+
     var btn = document.getElementById("nativeBuyProBtn");
     if(btn){ btn.disabled = true; btn.textContent = isAndroid() ? "Öffne cavalyra.de/pro…" : "Kauf wird gestartet…"; }
     try {
