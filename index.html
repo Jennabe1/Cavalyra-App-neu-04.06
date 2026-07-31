@@ -5910,6 +5910,10 @@ try {
   window.saveLicense = saveLicense;
   window.normalizeLicense = normalizeLicense;
   window.hasProAccess = hasProAccess;
+  // Nur für die Laufzeit-Diagnose lesbar gemacht (keine Logikänderung):
+  window.licenseEntitlementActive = licenseEntitlementActive;
+  window.isLicenseExpired = isLicenseExpired;
+  window.licenseExpiryTime = licenseExpiryTime;
   window.render = render;
   window.navigate = navigate;
   if (typeof toast === "function") window.toast = toast;

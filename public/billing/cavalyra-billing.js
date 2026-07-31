@@ -222,6 +222,7 @@
 
   function applyProState(active, source, extra){
     try {
+      try { iosBilling.lastApplyProState = { at:new Date().toISOString(), active:!!active, source:source||"", extra:extra||{} }; } catch(_){}
       debug("applyProState:called", { active:!!active, source:source || "", extra:extra || {}, before:licenseSnapshot() });
       if(active && source === "app_store" && !(extra && extra.entitlementConfirmed === true)){
         debug("license-change:blocked", { reason:"app_store_requires_confirmed_entitlement", active:!!active, source:source || "", extra:extra || {}, before:licenseSnapshot() });
@@ -367,14 +368,18 @@
       store.initialize([iosPlatform()]).then(function(){
         iosBilling.ready = true;
         debug("storekit:initialized", { productId: PRODUCT_ID_IOS });
+        try { traceLicenseDecision("app-start:storekit-initialized"); } catch(_){}
         if(typeof store.restorePurchases === "function"){
           store.restorePurchases().then(function(){
             iosBilling.restoreCompleted = true;
             debug("storekit:restore-completed", { receiptFullyLoaded: isReceiptFullyLoaded() });
+            try { traceLicenseDecision("after-restorePurchases"); } catch(_){}
             syncIosStore();
+            try { setTimeout(function(){ traceLicenseDecision("after-restorePurchases+sync"); }, 1500); } catch(_){}
           }).catch(function(err){
             iosBilling.restoreCompleted = true;
             debug("storekit:restore-failed", { message:(err && err.message) || String(err), receiptFullyLoaded: isReceiptFullyLoaded() });
+            try { traceLicenseDecision("after-restorePurchases-failed"); } catch(_){}
             syncIosStore();
           });
         } else {
@@ -609,6 +614,137 @@
       try { console.log("[CavalyraBilling][StoreKit-Diagnose] " + (tag||""), JSON.stringify(info, null, 2)); } catch(_){}
       return info;
     } catch(e){ debug("storekit:diagnostics-error", { message: e && e.message ? e.message : String(e) }); return null; }
+  }
+
+  /* -------- Laufzeit-Trace (NUR Protokollierung, keine Entscheidungslogik) --------
+     Beantwortet exakt: Receipt geladen? Produkttyp? Fundstelle des expirationDate?
+     readExpiryValue()? bewertete Transaktion? Ergebnis + Grund von
+     transactionLooksActive(), hasValidatedIosEntitlement(), licenseEntitlementActive()?
+     Übergabewerte an applyProState()? Endgültig gespeicherter Lizenzstatus?
+     Diese Funktion ruft ausschließlich die echten Funktionen auf und ändert nichts. */
+  function expirySite(tx){
+    if(!tx || typeof tx !== "object") return null;
+    if(tx.expiresDateMs || tx.expirationDateMs || tx.expiryDateMs) return "self:*DateMs";
+    if(tx.expirationDate || tx.expiryDate || tx.expiresDate || tx.expiresAt || tx.expirationTime || tx.expiryTime) return "self:expirationDate";
+    if(tx.nativePurchase && typeof tx.nativePurchase === "object"){ var a = expirySite(tx.nativePurchase); if(a) return "nativePurchase>" + a; }
+    if(tx.renewalInfo && typeof tx.renewalInfo === "object"){ var b = expirySite(tx.renewalInfo); if(b) return "renewalInfo>" + b; }
+    if(tx.purchaseInfo && typeof tx.purchaseInfo === "object"){ var c = expirySite(tx.purchaseInfo); if(c) return "purchaseInfo>" + c; }
+    return null;
+  }
+  function traceTransaction(tx){
+    var end = readExpiryValue(tx);
+    var isSub = isSubscriptionTransaction(tx);
+    var state = String((tx && (tx.state || tx.transactionState || tx.status)) || "").toLowerCase();
+    var active = transactionLooksActive(tx);
+    var reason;
+    if(!tx) reason = "keine Transaktion";
+    else if(state === "initiated" || state === "pending" || state === "approved") reason = "state=" + state + " -> false (nicht abgeschlossen)";
+    else if(state && !(state === "owned" || state === "finished" || state === "verified")) reason = "unbekannter state=" + state + " -> false";
+    else if(tx.isConsumed === true || tx.revoked === true || tx.isRevoked === true) reason = "consumed/revoked -> false";
+    else if(end && end <= new Date()) reason = "expirationDate " + end.toISOString() + " liegt in der Vergangenheit -> false";
+    else if(isSub) reason = "Abo: Entscheidung nur über Ablaufdatum, vorhanden=" + (!!end) + " -> " + active;
+    else reason = "Nicht-Abo (Lifetime), state=" + (state || "(leer)") + " -> " + active;
+    return {
+      transactionId: (tx && (tx.transactionId || tx.id)) || null,
+      productId: (tx && (tx.productId || tx.product_id)) || null,
+      products: (tx && tx.products) ? (tx.products.map ? tx.products.map(function(p){ return (p && (p.id || p.productId)) || p; }) : tx.products) : null,
+      state: state || null,
+      productTypeSource: (tx && (tx.type || tx.productType || tx.product_type)) || null,
+      isSubscription: isSub,
+      expiryFoundAt: expirySite(tx),
+      readExpiryValue: end ? end.toISOString() : null,
+      transactionLooksActive: active,
+      reason: reason
+    };
+  }
+  function traceLicenseDecision(tag){
+    var out = { tag: tag || "", now: new Date().toISOString() };
+    try {
+      var store = getStore();
+      out.storeAvailable = !!store;
+      out.iosBilling = {
+        ready: iosBilling.ready === true,
+        restoreCompleted: iosBilling.restoreCompleted === true,
+        receiptsReadyFired: iosBilling.receiptsReadyFired === true,
+        receiptsSeen: iosBilling.receiptsSeen === true,
+        lastApprovedAt: iosBilling.lastApprovedAt || null
+      };
+      out.isReceiptFullyLoaded = isReceiptFullyLoaded();
+
+      var prod = null;
+      try { prod = getIosProduct(); } catch(_){}
+      out.product = prod ? {
+        id: prod.id || null,
+        type: prod.type || prod.productType || null,
+        owned: prod.owned === true,
+        canPurchase: prod.canPurchase === true
+      } : { id: PRODUCT_ID_IOS, type: null, note: "store.get(PRODUCT_ID_IOS) lieferte nichts" };
+
+      var receipts = [];
+      try { receipts = (store && (store.localReceipts || store.receipts)) || []; } catch(_){}
+      out.receiptCount = receipts.length;
+
+      var evaluated = [];
+      try {
+        for(var i=0;i<receipts.length;i++){
+          var txs = (receipts[i] && receipts[i].transactions) || [];
+          for(var j=0;j<txs.length;j++) evaluated.push(traceTransaction(txs[j]));
+        }
+      } catch(_){}
+      out.evaluatedTransactions = evaluated;
+      out.matchingProductTransactions = evaluated.filter(function(t){
+        return t.productId === PRODUCT_ID_IOS || (t.products && t.products.indexOf && t.products.indexOf(PRODUCT_ID_IOS) >= 0);
+      });
+      out.anyTransactionActive = evaluated.some(function(t){ return t.transactionLooksActive === true; });
+
+      out.resolvedExpiryForValidUntil = getIosExpiryDate(null) || null;
+
+      var ent = null;
+      try { ent = hasValidatedIosEntitlement(); } catch(_){}
+      out.hasValidatedIosEntitlement = ent;
+      out.entitlementReason = ent
+        ? "objectContainsActiveProduct() fand mindestens eine Transaktion mit transactionLooksActive()=true"
+        : (out.receiptCount === 0
+            ? "keine Receipts vorhanden -> false"
+            : "keine Transaktion für " + PRODUCT_ID_IOS + " bestand transactionLooksActive() -> false");
+
+      var lic = null;
+      try { lic = (window.state && window.state.license) || null; } catch(_){}
+      out.storedLicense = lic ? {
+        status: lic.status || null,
+        pro: lic.pro === true,
+        source: lic.source || null,
+        validUntil: lic.validUntil || null,
+        validUntilSource: lic.validUntilSource || null,
+        trialStart: lic.trialStart || null,
+        checkedAt: lic.checkedAt || null,
+        entitlementConfirmed: lic.entitlementConfirmed === true
+      } : null;
+
+      try { out.licenseEntitlementActive = (typeof window.licenseEntitlementActive === "function") ? window.licenseEntitlementActive(lic) : null; } catch(_){ out.licenseEntitlementActive = null; }
+      try { out.isLicenseExpired = (typeof window.isLicenseExpired === "function") ? window.isLicenseExpired(lic) : null; } catch(_){ out.isLicenseExpired = null; }
+      try { out.hasProAccess = (typeof window.hasProAccess === "function") ? window.hasProAccess() : null; } catch(_){ out.hasProAccess = null; }
+      out.licenseReason = (out.isLicenseExpired === true)
+        ? "validUntil abgelaufen -> licenseEntitlementActive=false"
+        : ("status=" + ((lic && lic.status) || "(keiner)") + ", validUntil=" + ((lic && lic.validUntil) || "(leer)") + " -> licenseEntitlementActive=" + out.licenseEntitlementActive);
+
+      out.decisionPoint = out.hasValidatedIosEntitlement
+        ? "syncIosStore(): isIosProductOwned()=true -> applyProState(true,'app_store',...)"
+        : (!out.isReceiptFullyLoaded
+            ? "syncIosStore(): Abbruch vor Demotion – Receipt noch nicht vollständig geladen (Pro bleibt aus Cache aktiv)"
+            : ((iosBilling.lastApprovedAt && (Date.now() - iosBilling.lastApprovedAt) < 60000)
+                ? "syncIosStore(): Abbruch vor Demotion – Kauf vor <60s approved"
+                : "syncIosStore(): Demotion-Zweig – applyProState(false,'app_store',…) sofern source=app_store"));
+      out.lastApplyProState = iosBilling.lastApplyProState || null;
+    } catch(e){ out.traceError = (e && e.message) || String(e); }
+    debug("license:trace", out);
+    try { console.log("[CavalyraBilling][Lizenz-Trace] " + (tag||"") + "\n" + JSON.stringify(out, null, 2)); } catch(_){}
+    try {
+      var hist = JSON.parse(localStorage.getItem("cavalyra:license:trace") || "[]");
+      hist.push(out); while(hist.length > 10) hist.shift();
+      localStorage.setItem("cavalyra:license:trace", JSON.stringify(hist));
+    } catch(_){}
+    return out;
   }
   function isIosProductOwned(){
     var owned = hasValidatedIosEntitlement();
@@ -1053,6 +1189,8 @@
     getInstallationId: getInstallationId
     ,hasActiveIosEntitlement: hasValidatedIosEntitlement
     ,dumpStoreKitDiagnostics: dumpStoreKitDiagnostics
+    ,traceLicenseDecision: traceLicenseDecision
+    ,getLicenseTraceLog: function(){ try { return JSON.parse(localStorage.getItem("cavalyra:license:trace") || "[]"); } catch(_){ return []; } }
     ,isReceiptFullyLoaded: isReceiptFullyLoaded
     ,getDebugLog: function(){ try { return JSON.parse(localStorage.getItem(BILLING_DEBUG_KEY) || "[]") || []; } catch(_){ return []; } }
   };
