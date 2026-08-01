@@ -940,13 +940,9 @@
     if(!isIosApp()){
       throw new Error("In-App-Käufe sind nur in der mobilen App verfügbar.");
     }
-    // Bereits Pro? Dann keinen zweiten Kaufdialog öffnen.
-    try {
-      if(isIosProductOwned()){
-        applyProState(true, "app_store", iosServerExtra("already_owned_before_purchase"));
-        return true;
-      }
-    } catch(_){}
+    // Kein Vorab-Kurzschluss: jeder Kaufklick läuft bis offer.order() durch,
+    // damit StoreKit den Dialog selbst entscheiden kann.
+
     // iOS StoreKit-Kauf
     if(!iosBilling.initStarted) initIosBilling();
     if(iosBilling.initError) throw new Error(iosBilling.initError);
