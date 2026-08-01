@@ -2704,7 +2704,21 @@ function licenseEntitlementActive(lic){
   if(isIosPlatform() && lic.storekitVerdict === "inactive") return false;
   if(isLicenseExpired(lic)) return false;
   const s = canonicalLicenseStatus(lic.status);
-  return s === "pro" || s === "trial";
+  const active = (s === "pro" || s === "trial");
+  if(!active) return false;
+  // Sicherheitsnetz gegen "ewiges Pro": eine App-Store-Lizenz ohne bekanntes
+  // Ablaufdatum gilt nur so lange, wie das Serverurteil frisch ist (48 h).
+  // Danach entscheidet erst die nächste Servervalidierung wieder.
+  if(isIosPlatform() && lic.source === "app_store"){
+    const end = lic.validUntil || lic.expiresAt || lic.expiryDate || lic.expires_at || "";
+    if(!end){
+      const stampRaw = lic.storekitVerdictAt || lic.checkedAt || "";
+      const stamp = stampRaw ? new Date(stampRaw).getTime() : NaN;
+      if(!stamp || isNaN(stamp)) return false;
+      if(Date.now() - stamp > 48*60*60*1000) return false;
+    }
+  }
+  return true;
 }
 
 
@@ -2980,14 +2994,29 @@ function hasProAccess(){
    bereits vorhandene Statusprüfung erneut auf und rendert bei Änderung neu. */
 (function installLicenseExpiryWatch(){
   let lastAccess = null;
+  let lastRecheckAt = 0;
   async function evaluate(){
     try{
       const before = normalizeLicense();
       const wasExpiredNow = isLicenseExpired(before);
       if(wasExpiredNow && before.pro !== false){ saveLicense(true); }
+      // iOS: App-Store-Lizenz mit veraltetem Serverurteil (>6 h) oder ohne
+      // Ablaufdatum ebenfalls erneut prüfen – so wird sowohl der Ablauf
+      // zuverlässig gesperrt als auch eine Verlängerung wieder freigeschaltet.
+      let staleStoreVerdict = false;
+      if(isIosPlatform() && before.source === "app_store"){
+        const end = before.validUntil || before.expiresAt || "";
+        const stampRaw = before.storekitVerdictAt || before.checkedAt || "";
+        const stamp = stampRaw ? new Date(stampRaw).getTime() : NaN;
+        staleStoreVerdict = !end || !stamp || isNaN(stamp) || (Date.now() - stamp > 6*60*60*1000);
+      }
       // Nach Ablauf einmalig den echten Store-/Serverstatus erneut abfragen,
       // damit ein weiterlaufendes Abo sofort wieder freischaltet.
-      if(wasExpiredNow && window.CavalyraBilling && typeof window.CavalyraBilling.checkProStatus === "function"){
+      // Höchstens alle 10 Minuten, damit kein Dauerpolling entsteht.
+      const needsRecheck = (wasExpiredNow || staleStoreVerdict);
+      if(needsRecheck && (Date.now() - lastRecheckAt) > 10*60*1000
+         && window.CavalyraBilling && typeof window.CavalyraBilling.checkProStatus === "function"){
+        lastRecheckAt = Date.now();
         try{ await window.CavalyraBilling.checkProStatus(); }catch(_){}
       }
       const access = hasProAccess();

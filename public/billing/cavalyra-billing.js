@@ -436,9 +436,17 @@
       return { ok:true, payload: body };
     }
     // Nur ein echtes Apple-Urteil (abgelaufen/widerrufen/keine Transaktion)
-    // darf als "nicht aktiv" gelten. Technische Fehler zählen nicht.
+    // darf als "nicht aktiv" gelten.
+    // "apple_receipt_invalid" zählt NICHT als final, weil Apples /verifyReceipt
+    // damit sowohl endgültig ungültige Receipts als auch temporäre Server-
+    // fehler (z. B. 21005) melden kann. Demotion darf erst bei eindeutig
+    // negativem Entitlement erfolgen, nicht bei temporären Apple-Fehlern.
+    // Technische Fehler (Netz, Apple-API down) zählen ebenfalls NICHT.
     var msg = (body && body.message) || "";
-    var conclusive = (msg === "subscription_expired" || msg === "no_matching_transaction");
+    var conclusive = (
+      msg === "subscription_expired" ||
+      msg === "no_matching_transaction"
+    );
     iosServerValidation = {
       done: conclusive,
       active: false,
@@ -608,6 +616,11 @@
         if(App && App.addListener){
           App.addListener("resume", function(){ requestIosServerValidation(null); });
         }
+      } catch(_){}
+      // Zusätzlich: regelmäßige Revalidierung, damit Ablauf UND Verlängerung
+      // auch bei dauerhaft geöffneter App erkannt werden (alle 15 Minuten).
+      try {
+        setInterval(function(){ requestIosServerValidation(null); }, 15*60*1000);
       } catch(_){}
     } catch(e){ iosBilling.initError = e && e.message ? e.message : String(e); }
   }
