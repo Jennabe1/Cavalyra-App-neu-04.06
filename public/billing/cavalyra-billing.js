@@ -47,7 +47,7 @@
   var CHECK_LICENSE_URL   = SUPABASE_URL + "/functions/v1/check-license";
   // Endgültiger StoreKit-Validator (Apple App Store Server API).
   var VALIDATE_IOS_URL    = SUPABASE_URL + "/functions/v1/validate-ios-receipt";
-  var LEGACY_LICENSE_CHECK_URL = "https://cavalyra.de/.netlify/functions/check-license";
+  // (entfernt) Legacy-Netlify-Lizenzcheck wird nicht mehr verwendet.
   var LICENSE_EMAIL_STORAGE = "cavalyra:license:email";
   var INSTALLATION_ID_STORAGE = "cavalyra:installation_id";
   var INSTALLATION_ID_PREF_KEY = "cavalyra_installation_id";
@@ -840,41 +840,20 @@
     return { ok:true, status:status, active:true };
   }
 
-  // Legacy-Path (Web / E-Mail-Restore): fragt weiterhin die Netlify-Function ab.
+  // Einzige Paddle-Lizenzquelle: Supabase `check-license` (liest public.licenses,
+  // gepflegt vom Paddle-Webhook). Zuordnung über installation_id bzw. user_id.
+  // Die alte Netlify-Function wird nicht mehr verwendet.
   async function refreshLicenseFromServer(explicitEmail){
-    // Android nutzt ausschließlich den anonymen/JWT-basierten Supabase-Endpunkt.
-    if(isAndroidApp() && !explicitEmail){
-      return await refreshLicenseViaSupabase();
+    var email = (explicitEmail || "").trim().toLowerCase();
+    if(email && email.indexOf("@") !== -1){
+      try {
+        var r = await restoreLicenseByEmail(email);
+        if(r && r.ok) return r;
+      } catch(_){}
     }
-    var email = (explicitEmail || getKnownEmail() || "").trim().toLowerCase();
-    if(!email || email.indexOf("@") === -1){
-      return await refreshLicenseViaSupabase();
-    }
-    try {
-      var res = await fetch(LEGACY_LICENSE_CHECK_URL + "?email=" + encodeURIComponent(email), {
-        method:"GET",
-        headers:{ "Accept":"application/json" }
-      });
-      var data = await res.json().catch(function(){ return null; });
-      if(!res.ok || !data){
-        return { ok:false, status:"free", reason:"network" };
-      }
-      var status = String(data.status || "free").toLowerCase();
-      var isPro  = status === "pro" || status === "trial";
-      saveKnownEmail(email);
-      applyProState(isPro, "paddle", {
-        email: email,
-        status: status,
-        customerId: data.customerId || "",
-        subscriptionId: data.subscriptionId || "",
-        validUntil: data.validUntil || "",
-        trial: status === "trial"
-      });
-      return { ok:true, status:status, active:isPro };
-    } catch(e){
-      return { ok:false, status:"free", reason:"exception", message:e && e.message };
-    }
+    return await refreshLicenseViaSupabase();
   }
+
 
   // Android-Kauf: KEINE In-App-Checkout-Logik mehr. Der Kauf wird vollständig
   // auf https://cavalyra.de/pro abgewickelt. Die App öffnet die Seite und

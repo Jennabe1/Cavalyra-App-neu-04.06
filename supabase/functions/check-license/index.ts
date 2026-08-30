@@ -122,7 +122,7 @@ Deno.serve(async (req) => {
 
     return json(200, {
       ok: true,
-      status: (active.status || "pro").toLowerCase(),
+      status: ((active.status || "pro").toLowerCase() === "trialing" ? "trial" : (active.status || "pro").toLowerCase()),
       expiresAt: active.expires_at || null,
       customerId: active.customer_id || null,
       subscriptionId: active.subscription_id || null,
@@ -161,9 +161,13 @@ Deno.serve(async (req) => {
 
   let status = (lic.status || "free").toLowerCase();
   const expiresAt = lic.expires_at || null;
-  if (status === "pro" && expiresAt && new Date(expiresAt).getTime() < Date.now()) {
+  // trialing -> trial (Trial bleibt als Testphase erkennbar).
+  if (status === "trialing") status = "trial";
+  // Ablaufdatum ist für JEDEN aktiven Paddle-Status verbindlich.
+  if (ACTIVE_STATUSES.has(status) && expiresAt && new Date(expiresAt).getTime() < Date.now()) {
     status = "expired";
   }
+
 
   return json(200, {
     ok: true,

@@ -2590,10 +2590,67 @@ function seedHorsebook(){return [
 const CAVALYRA_LICENSE_CONFIG = {
   pricingUrl: "https://cavalyra.de/#preise",
   customerPortalUrl: "https://customer-portal.paddle.com/cpl_01ksj34k26v4xebfvgtnb3xbf9",
-  checkEndpoint: "https://cavalyra.de/.netlify/functions/check-license",
-  offlineGraceDays: 14
+  // Einzige Lizenzquelle für Paddle: Supabase-Edge-Function `check-license`,
+  // die ausschließlich public.licenses liest (vom Paddle-Webhook gepflegt).
+  // Zuordnung über installation_id bzw. user_id (JWT) – E-Mail ist optional.
+  checkEndpoint: "https://upbubifdcndfxbvmgwzg.supabase.co/functions/v1/check-license",
+  checkAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc",
+  offlineGraceDays: 14,
+  // Paddle-Lizenz ohne belastbares Ablaufdatum gilt nur so lange, wie das
+  // Serverurteil frisch ist. Danach entscheidet erst der nächste Check.
+  paddleVerdictMaxAgeHours: 48
 };
 const CAVALYRA_LICENSE_STORAGE_KEYS = ["cavalyra_license", "cavalyra_license_v1", "cavalyra_pro_license", "cavalyra_pro_access"];
+
+/* Zentraler Paddle-Lizenz-Abruf gegen die Supabase-Function `check-license`.
+   Zuordnung: user_id (JWT, falls Cloud-Konto) bzw. installation_id.
+   Eine E-Mail ist NICHT erforderlich; sie wird nur als optionaler
+   Restore-Parameter mitgesendet, wenn sie bereits bekannt ist. */
+async function fetchPaddleLicense(optionalEmail){
+  const headers = { "Accept":"application/json", "apikey": CAVALYRA_LICENSE_CONFIG.checkAnonKey };
+  let jwt = "";
+  try{
+    const sess = (window.CavalyraSyncEngine && window.CavalyraSyncEngine.getSession && window.CavalyraSyncEngine.getSession())
+      || (window.CavalyraCloud && window.CavalyraCloud.getSession && window.CavalyraCloud.getSession());
+    if(sess && sess.access_token) jwt = sess.access_token;
+  }catch(_){}
+  headers["Authorization"] = "Bearer " + (jwt || CAVALYRA_LICENSE_CONFIG.checkAnonKey);
+
+  let installationId = "";
+  try{
+    if(window.CavalyraBilling && typeof window.CavalyraBilling.getInstallationId === "function"){
+      installationId = await window.CavalyraBilling.getInstallationId();
+    }
+  }catch(_){}
+  if(!installationId){
+    try{ installationId = localStorage.getItem("cavalyra:installation_id") || ""; }catch(_){}
+  }
+
+  const body = {};
+  if(installationId) body.installation_id = installationId;
+  const email = (optionalEmail || "").trim().toLowerCase();
+  if(email && email.includes("@")) body.email = email;
+  if(!installationId && !email && !jwt) return null;
+
+  const res = await fetch(CAVALYRA_LICENSE_CONFIG.checkEndpoint, {
+    method: "POST",
+    headers: Object.assign({ "Content-Type":"application/json" }, headers),
+    body: JSON.stringify(body),
+    cache: "no-store"
+  });
+  const data = await res.json().catch(()=>null);
+  if(!res.ok || !data) return null;
+  return {
+    ok: data.ok !== false,
+    status: canonicalLicenseStatus(data.status || "free"),
+    validUntil: data.expiresAt || data.validUntil || "",
+    subscriptionId: data.subscriptionId || "",
+    customerId: data.customerId || "",
+    source: data.source || "paddle",
+    message: data.message || ""
+  };
+}
+
 
 function isLicenseAccessStatus(status){
   const s = canonicalLicenseStatus(status);
@@ -2718,7 +2775,21 @@ function licenseEntitlementActive(lic){
       if(Date.now() - stamp > 48*60*60*1000) return false;
     }
   }
+  // Gleiches Sicherheitsnetz für Paddle (Android/Web): eine Paddle-Lizenz
+  // ohne belastbares Ablaufdatum gewährt Pro nicht unbegrenzt, sondern nur
+  // so lange, wie das letzte Serverurteil frisch ist.
+  if(!isIosPlatform() && lic.source !== "app_store"){
+    const pEnd = lic.validUntil || lic.expiresAt || lic.expiryDate || lic.expires_at || "";
+    if(!pEnd){
+      const maxAge = (CAVALYRA_LICENSE_CONFIG.paddleVerdictMaxAgeHours || 48)*60*60*1000;
+      const pStampRaw = lic.checkedAt || "";
+      const pStamp = pStampRaw ? new Date(pStampRaw).getTime() : NaN;
+      if(!pStamp || isNaN(pStamp)) return false;
+      if(Date.now() - pStamp > maxAge) return false;
+    }
+  }
   return true;
+
 }
 
 
@@ -2866,12 +2937,8 @@ async function checkCavalyraLicenseStatus(){
     }
   }
 
-  if(!email || !email.includes("@")){
-    toast("Bitte gib die E-Mail-Adresse ein, mit der du Cavalyra gekauft hast.");
-    return false;
-  }
-
-  setLicenseEmail(email);
+  // E-Mail ist optional: der Check läuft primär über installation_id/user_id.
+  if(email && email.includes("@")) setLicenseEmail(email);
 
   const btn = document.getElementById("licenseCheckBtn");
   if(btn){
@@ -2880,28 +2947,24 @@ async function checkCavalyraLicenseStatus(){
   }
 
   try{
-    const url = CAVALYRA_LICENSE_CONFIG.checkEndpoint + "?email=" + encodeURIComponent(email);
-    const response = await fetch(url, { method:"GET", headers:{ "Accept":"application/json" } });
-    const data = await response.json().catch(()=>null);
+    const data = await fetchPaddleLicense(email);
+    if(!data) throw new Error("Status konnte nicht geprüft werden.");
 
-    if(!response.ok || !data || !data.ok){
-      throw new Error(data && data.message ? data.message : "Status konnte nicht geprüft werden.");
-    }
-
-    const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
-    const isPro = newStatus === "pro" || newStatus === "trial";
+    const newStatus = data.ok ? data.status : "free";
+    const prev = normalizeLicense();
     state.license = {
       status: newStatus,
-      pro: isPro,
-      email: email,
-      source: "paddle-check",
+      pro: newStatus === "pro" || newStatus === "trial",
+      email: email || prev.email || "",
+      source: data.source || "paddle",
       checkedAt: new Date().toISOString(),
       validUntil: data.validUntil || "",
-      subscriptionId: data.subscriptionId || "",
-      customerId: data.customerId || ""
+      subscriptionId: data.subscriptionId || prev.subscriptionId || "",
+      customerId: data.customerId || prev.customerId || ""
     };
     saveLicense(true);
 
+    const isPro = licenseEntitlementActive(normalizeLicense());
     toast(isPro ? "Pro-Status bestätigt" : "Kein aktives Pro-Abo gefunden");
 
     if(isPro){
@@ -2910,6 +2973,7 @@ async function checkCavalyraLicenseStatus(){
     } else {
       render();
     }
+
   }catch(err){
     console.error("License check failed", err);
     toast("Lizenzprüfung aktuell nicht möglich. Bitte später erneut versuchen.");
@@ -3043,31 +3107,30 @@ async function refreshLicenseSilently(){
     // iOS / StoreKit-verwaltet: Paddle-Check überspringen, damit ein bestätigter
     // Apple-Kauf niemals durch einen Paddle-Free-Status überschrieben wird.
     if(isStoreKitManaged()) return;
+    // Kein E-Mail-Zwang: Zuordnung über installation_id bzw. user_id (JWT).
     const email = licenseEmail();
-    if(!email || !email.includes("@")) return;
-    const url = CAVALYRA_LICENSE_CONFIG.checkEndpoint + "?email=" + encodeURIComponent(email);
-    const res = await fetch(url, { method:"GET", headers:{ "Accept":"application/json" }, cache:"no-store" });
-    if(!res.ok) return;
-    const data = await res.json().catch(()=>null);
-    if(!data || !data.ok) return;
-    const newStatus = canonicalLicenseStatus(data.status || (data.active ? "pro" : "free"));
+    const data = await fetchPaddleLicense(email);
+    if(!data) return;
+    const newStatus = data.ok ? data.status : "free";
     const prev = normalizeLicense();
     // Zusätzliche Absicherung: bestätigte StoreKit-Lizenz nie überschreiben.
     if(prev.source === "app_store" && isLicenseAccessStatus(prev.status)) return;
-    const prevWasPro = prev.status === "pro" || prev.status === "trial";
+    const prevWasPro = licenseEntitlementActive(prev);
     const nowPro = newStatus === "pro" || newStatus === "trial";
     state.license = Object.assign({}, prev, {
       status: newStatus,
       pro: nowPro,
-      email: email,
+      email: email || prev.email || "",
       source: "paddle-silent",
       checkedAt: new Date().toISOString(),
-      validUntil: data.validUntil || prev.validUntil || "",
+      validUntil: data.validUntil || (nowPro ? "" : prev.validUntil || ""),
       subscriptionId: data.subscriptionId || prev.subscriptionId || "",
       customerId: data.customerId || prev.customerId || ""
     });
+
     saveLicense(true);
-    if(prevWasPro !== nowPro){ try{ render(); }catch(_){} }
+    if(prevWasPro !== licenseEntitlementActive(normalizeLicense())){ try{ render(); }catch(_){} }
+
   }catch(_){ /* offline / server down: still keep last known good status */ }
 }
 

@@ -66,13 +66,16 @@ async function verifyPaddleSignature(
   return diff === 0;
 }
 
-type LicenseStatus = "pro" | "past_due" | "expired";
+type LicenseStatus = "pro" | "trial" | "past_due" | "expired";
 
 function mapSubscriptionStatus(paddleStatus: string, endsAt?: string | null): LicenseStatus {
   switch (paddleStatus) {
     case "active":
-    case "trialing":
       return "pro";
+    case "trialing":
+      // Trial bleibt Trial: der Zugang ist aktiv, aber klar als Testphase
+      // gekennzeichnet und immer mit echtem Ablaufdatum versehen.
+      return "trial";
     case "past_due":
       return "past_due";
     case "canceled": {
@@ -86,6 +89,7 @@ function mapSubscriptionStatus(paddleStatus: string, endsAt?: string | null): Li
       return "expired";
   }
 }
+
 
 interface LicenseUpsert {
   user_id: string;
@@ -199,16 +203,30 @@ Deno.serve(async (req) => {
       expiresAt = data.canceled_at || endsAt;
     }
   } else if (isTransactionEvent) {
+    // WICHTIG: data.billed_at ist der ZAHLUNGSZEITPUNKT und darf NIE als
+    // Ablaufdatum verwendet werden. Maßgeblich ist das Ende der mit dieser
+    // Transaktion gewährten Abrechnungs-/Trial-Periode.
+    const txEnd: string | null =
+      data.billing_period?.ends_at ||
+      data.details?.line_items?.[0]?.proration?.billing_period?.ends_at ||
+      null;
     status = "pro";
-    expiresAt = data.billed_at || null;
+    expiresAt = txEnd;
+    if (!expiresAt) {
+      console.warn("[paddle-webhook] transaction.completed ohne billing_period.ends_at", {
+        transaction_id: data.id,
+        subscription_id: subscriptionId,
+      });
+    }
   }
+
 
   // Bestehende Zeile finden (user_id bevorzugt, sonst installation_id).
   let existingRow: any = null;
   if (userId) {
     const { data: r } = await supabase
       .from("licenses")
-      .select("id,email,customer_id,subscription_id,installation_id")
+      .select("id,email,customer_id,subscription_id,installation_id,expires_at")
       .eq("user_id", userId)
       .maybeSingle();
     existingRow = r;
@@ -216,7 +234,7 @@ Deno.serve(async (req) => {
   if (!existingRow && installationId) {
     const { data: r } = await supabase
       .from("licenses")
-      .select("id,email,customer_id,subscription_id,installation_id,user_id")
+      .select("id,email,customer_id,subscription_id,installation_id,user_id,expires_at")
       .eq("installation_id", installationId)
       .maybeSingle();
     existingRow = r;
@@ -240,6 +258,8 @@ Deno.serve(async (req) => {
     if (!row.customer_id && existingRow.customer_id) row.customer_id = existingRow.customer_id;
     if (!row.subscription_id && existingRow.subscription_id) row.subscription_id = existingRow.subscription_id;
     if (!row.user_id && existingRow.user_id) row.user_id = existingRow.user_id;
+    // Ein bereits bekanntes, belastbares Ablaufdatum darf nicht durch null verloren gehen.
+    if (!row.expires_at && existingRow.expires_at) row.expires_at = existingRow.expires_at;
     if (!row.installation_id && existingRow.installation_id) row.installation_id = existingRow.installation_id;
 
     const { error: updErr } = await supabase
