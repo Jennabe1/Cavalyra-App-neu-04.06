@@ -3,12 +3,11 @@
    -------------------------------------------------------------------------
    Web     -> Paddle (unverändert, via index.html Legacy-Flow)
    iOS     -> Apple StoreKit (cordova-plugin-purchase v13 / CdvPurchase)
-   Android -> KEINE In-App-Zahlungslogik mehr. Sämtliche Kauf-, Preis- und
-              Zahlungslogik läuft ausschließlich über die Website
-              https://cavalyra.de/pro. Die App öffnet diese Seite über den
-              Capacitor Browser (`openProWebsite()`) und prüft nach der
-              Rückkehr den Lizenzstatus über die Supabase-Edge-Function
-              `check-license?installation_id=…`.
+   Android -> KEINE In-App-Zahlungslogik. `openProWebsite()` ruft die
+              Supabase-Edge-Function `create-paddle-checkout` per POST auf
+              und öffnet die gelieferte `checkoutUrl` im Capacitor Browser.
+              Nach der Rückkehr (browserFinished / appStateChange) wird der
+              Lizenzstatus über `check-license?installation_id=…` geprüft.
 
    Zentrale Funktion für Android-Kauf-Entry: `window.openProWebsite()`.
    Keine andere Stelle im Code darf die Checkout-URL selbst zusammensetzen.
@@ -45,6 +44,10 @@
   var SUPABASE_URL = "https://upbubifdcndfxbvmgwzg.supabase.co";
   var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwYnViaWZkY25kZnhidm1nd3pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTg5MjEsImV4cCI6MjA5NTUzNDkyMX0.f3OQwrVb-mRrr045ia_jcduC8NlOFJghRJFjJkM1qzc";
   var CHECK_LICENSE_URL   = SUPABASE_URL + "/functions/v1/check-license";
+  // Android-Kauf: einzige Checkout-Quelle. Liefert bei HTTP 200
+  // { checkoutUrl, transactionId }. Die checkoutUrl wird per Capacitor
+  // Browser geöffnet.
+  var CREATE_CHECKOUT_URL = SUPABASE_URL + "/functions/v1/create-paddle-checkout";
   // Endgültiger StoreKit-Validator (Apple App Store Server API).
   var VALIDATE_IOS_URL    = SUPABASE_URL + "/functions/v1/validate-ios-receipt";
   // (entfernt) Legacy-Netlify-Lizenzcheck wird nicht mehr verwendet.
@@ -132,27 +135,67 @@
     return "";
   }
 
-  // -------------------- openProWebsite() --------------------
+  // -------------------- openProWebsite() (Android-Kauf) --------------------
   // Zentrale und EINZIGE Funktion zum Starten der Pro-Freischaltung
-  // in der Android-App. Öffnet ausschließlich die Website. Kein Checkout,
-  // keine Paddle-Kommunikation, keine Preislogik im Client.
+  // in der Android-App. Ruft die Supabase-Edge-Function
+  // `create-paddle-checkout` per POST auf. Bei HTTP 200 liefert die Function
+  // { checkoutUrl, transactionId }. Der Client verwendet ausschließlich
+  // data.checkoutUrl und öffnet sie über den Capacitor Browser.
+  // HTTP 200 bedeutet hier nur: Paddle-Transaction wurde erzeugt –
+  // der Checkout ist damit noch NICHT abgeschlossen.
   async function openProWebsite(){
     var installationId = await getInstallationId();
-    var appVersion = await getAppVersion();
-    var params = [
-      "installation_id=" + encodeURIComponent(installationId),
-      "platform=android",
-      "app_version=" + encodeURIComponent(appVersion || ""),
-      "source=app"
-    ].join("&");
-    var url = PRO_WEBSITE_URL + "?" + params;
-    debug("openProWebsite", { url: url });
+    var email = "";
+    try { email = (localStorage.getItem(LICENSE_EMAIL_STORAGE) || "").trim().toLowerCase(); } catch(_){}
+    var token = getSupabaseAccessToken();
+    var headers = {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + (token || SUPABASE_ANON_KEY)
+    };
+    var resp;
+    try {
+      resp = await fetch(CREATE_CHECKOUT_URL, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({
+          installation_id: installationId,
+          platform: "android",
+          email: email || undefined,
+          source: "app"
+        })
+      });
+    } catch(e){
+      debug("createCheckout:network-error", { error: String(e && e.message || e) });
+      if(window.toast) window.toast("Keine Verbindung zum Checkout-Server. Bitte Internetverbindung prüfen.");
+      return false;
+    }
+    var data = null;
+    try { data = await resp.json(); } catch(_){}
+    if(!resp.ok || !data || !data.checkoutUrl){
+      debug("createCheckout:failed", { status: resp && resp.status, body: data });
+      if(window.toast) window.toast("Der Checkout konnte nicht geöffnet werden. Bitte später erneut versuchen.");
+      return false;
+    }
+    debug("createCheckout:open", { checkoutUrl: data.checkoutUrl, transactionId: data.transactionId || null });
+    var url = data.checkoutUrl;
     var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
     if(Browser && typeof Browser.open === "function"){
       try {
         await Browser.open({ url: url, presentationStyle: "fullscreen" });
-        return;
+        return true;
       } catch(_){}
+    }
+    try { window.open(url, "_blank", "noopener"); return true; } catch(_){}
+    return false;
+  }
+
+  // Verwaltungs-/Infoseite (Preise, Portal) – KEIN Kaufpfad.
+  function openProManagementSite(){
+    var url = PRO_WEBSITE_URL;
+    var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+    if(Browser && typeof Browser.open === "function"){
+      try { Browser.open({ url: url, presentationStyle: "fullscreen" }); return; } catch(_){}
     }
     try { window.open(url, "_blank", "noopener"); } catch(_){}
   }
@@ -855,38 +898,56 @@
   }
 
 
-  // Android-Kauf: KEINE In-App-Checkout-Logik mehr. Der Kauf wird vollständig
-  // auf https://cavalyra.de/pro abgewickelt. Die App öffnet die Seite und
-  // aktualisiert nach der Rückkehr den Lizenzstatus über check-license.
+  // Android-Kauf: KEINE In-App-Checkout-Logik und keine Netlify-Abfrage.
+  // `openProWebsite()` ruft create-paddle-checkout auf und öffnet die
+  // gelieferte checkoutUrl im Capacitor Browser. Nach der Rückkehr in die
+  // App wird der Lizenzstatus ausschließlich über `check-license`
+  // (public.licenses, gepflegt vom Paddle-Webhook) aktualisiert.
 
 
-
-
-
-
-  // Auto-Refresh nach Rückkehr in die App (Paddle-Kauf beendet)
+  // Auto-Refresh nach Rückkehr in die App (Paddle-Checkout beendet).
+  // Rückkehr-Erkennung (Capacitor Browser / Android Custom Tab lädt die
+  // Paddle-Return-URL https://cavalyra.de/return IN der Browser-View – ein
+  // Custom-Scheme-Deep-Link wird dabei NICHT ausgelöst):
+  //   1. `browserFinished`-Event des Browser-Plugins (Checkout geschlossen)
+  //   2. `appStateChange`/`resume` (App wird wieder aktiv)
+  //   3. `appUrlOpen` (Fallback, falls doch ein Deep-Link greift)
+  // Danach gestaffelte Refreshes, weil der Paddle-Webhook die Lizenz
+  // asynchron einträgt.
   function attachAndroidResumeHook(){
     if(!isAndroidApp()) return;
     function refreshAll(){
       refreshLicenseViaSupabase().catch(function(){});
       try { if(typeof window.refreshLicenseSilently === "function") window.refreshLicenseSilently(); } catch(_){}
     }
+    function staggeredRefresh(){
+      refreshAll();
+      [1500, 4000, 8000, 15000, 30000].forEach(function(ms){ setTimeout(refreshAll, ms); });
+    }
+    // 1. Browser-View wurde geschlossen (Checkout beendet oder abgebrochen)
+    try {
+      var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+      if(Browser && Browser.addListener){
+        Browser.addListener("browserFinished", function(){
+          staggeredRefresh();
+        });
+      }
+    } catch(_){}
     try {
       var App = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App;
       if(App && App.addListener){
+        // 2. App wird wieder aktiv
         App.addListener("appStateChange", function(state){
-          if(state && state.isActive) refreshAll();
+          if(state && state.isActive) staggeredRefresh();
         });
         App.addListener("resume", refreshAll);
-        // Deep Link Rückkehr aus Paddle (cavalyra://return oder https://cavalyra.de/return)
+        // 3. Fallback: Deep-Link-Rückkehr (nur falls tatsächlich ausgelöst)
         App.addListener("appUrlOpen", function(data){
           try {
             var url = (data && data.url) || "";
-            // Browser-View des Paddle-Checkouts schließen, falls noch offen
+            if(url && url.indexOf("cavalyra") === -1 && url.indexOf("cavalyra.de/return") === -1) return;
             try { window.Capacitor.Plugins.Browser && window.Capacitor.Plugins.Browser.close && window.Capacitor.Plugins.Browser.close(); } catch(_){}
-            // Nach Rückkehr sofort mehrfach prüfen, bis der Webhook den Status gesetzt hat
-            refreshAll();
-            [1500, 4000, 8000, 15000].forEach(function(ms){ setTimeout(refreshAll, ms); });
+            staggeredRefresh();
           } catch(_){}
         });
       }
@@ -925,9 +986,12 @@
   async function startProPurchase(){
     debug("button:pro-freischalten-pressed", { platform:getPlatform(), before:licenseSnapshot() });
     if(isAndroidApp()){
-      // Android: kompletter Kaufprozess läuft ausschließlich auf der Website.
+      // Android: create-paddle-checkout aufrufen und data.checkoutUrl im
+      // Capacitor Browser öffnen. Kein "Erfolg"-Return – der geöffnete
+      // Checkout ist noch kein Kauf. Die Freischaltung erfolgt erst nach
+      // Webhook-Eintrag über check-license (siehe attachAndroidResumeHook).
       await openProWebsite();
-      return true;
+      return;
     }
     if(!isIosApp()){
       throw new Error("In-App-Käufe sind nur in der mobilen App verfügbar.");
@@ -1355,10 +1419,11 @@
         return false;
       };
     } else if(isAndroid()){
-      // Android: sämtliche Preis-/Portal-/Kauf-Links führen ausschließlich
-      // auf cavalyra.de/pro. Keine Paddle-Kommunikation mehr im Client.
-      window.openCavalyraPricing = function(){ return window.openProWebsite(); };
-      window.openCavalyraCustomerPortal = function(){ return window.openProWebsite(); };
+      // Android: Preis-/Portal-Links öffnen die Verwaltungsseite
+      // (cavalyra.de/pro) – KEIN Kaufpfad. Der Kauf läuft ausschließlich
+      // über openProWebsite() → create-paddle-checkout.
+      window.openCavalyraPricing = function(){ openProManagementSite(); return false; };
+      window.openCavalyraCustomerPortal = function(){ openProManagementSite(); return false; };
     }
 
     setTimeout(function(){
