@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.validate-ios-receipt]
 verify_jwt = false
+
+[functions.paddle-portal-session]
+verify_jwt = false

@@ -48,6 +48,9 @@
   // { checkoutUrl, transactionId }. Die checkoutUrl wird per Capacitor
   // Browser geöffnet.
   var CREATE_CHECKOUT_URL = SUPABASE_URL + "/functions/v1/create-paddle-checkout";
+  // Android-Aboverwaltung: erzeugt serverseitig eine temporäre
+  // Paddle-Customer-Portal-Session. Kein Kaufpfad.
+  var PORTAL_SESSION_URL  = SUPABASE_URL + "/functions/v1/paddle-portal-session";
   // Endgültiger StoreKit-Validator (Apple App Store Server API).
   var VALIDATE_IOS_URL    = SUPABASE_URL + "/functions/v1/validate-ios-receipt";
   // (entfernt) Legacy-Netlify-Lizenzcheck wird nicht mehr verwendet.
@@ -199,6 +202,63 @@
     }
     try { window.open(url, "_blank", "noopener"); } catch(_){}
   }
+
+  // -------------------- Paddle Customer Portal (nur Android) --------------------
+  // Erzeugt bei JEDEM Aufruf eine neue temporäre Portal-Session serverseitig.
+  // Ändert keinen Lizenz-/Pro-Status und täuscht keinen Erfolg vor.
+  async function requestPaddlePortalSession(){
+    var installationId = await getInstallationId();
+    var email = "";
+    try { email = (localStorage.getItem(LICENSE_EMAIL_STORAGE) || "").trim().toLowerCase(); } catch(_){}
+    var token = getSupabaseAccessToken();
+    var resp;
+    try {
+      resp = await fetch(PORTAL_SESSION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": "Bearer " + (token || SUPABASE_ANON_KEY)
+        },
+        body: JSON.stringify({
+          installation_id: installationId,
+          email: email || undefined
+        })
+      });
+    } catch(e){
+      return { ok: false, error: "network" };
+    }
+    var data = null;
+    try { data = await resp.json(); } catch(_){}
+    if(!resp.ok || !data) return { ok: false, error: "http_" + (resp && resp.status) };
+    return data;
+  }
+
+  async function openPaddlePortal(){
+    var data = await requestPaddlePortalSession();
+    if(!data || !data.ok){
+      if(window.toast){
+        if(data && data.reason === "no_paddle_subscription"){
+          window.toast("Es wurde kein Paddle-Abo für dieses Gerät gefunden.");
+        } else {
+          window.toast("Die Aboverwaltung konnte nicht geöffnet werden. Bitte später erneut versuchen.");
+        }
+      }
+      return false;
+    }
+    var url = data.overviewUrl || data.updatePaymentMethodUrl || data.cancelSubscriptionUrl;
+    if(!url){
+      if(window.toast) window.toast("Die Aboverwaltung konnte nicht geöffnet werden.");
+      return false;
+    }
+    var Browser = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser;
+    if(Browser && typeof Browser.open === "function"){
+      try { await Browser.open({ url: url, presentationStyle: "fullscreen" }); return true; } catch(_){}
+    }
+    try { window.open(url, "_blank", "noopener"); return true; } catch(_){}
+    return false;
+  }
+
 
   // Optionaler Zugriff auf Supabase-Access-Token (nur wenn Cloud-Konto aktiv).
   function getSupabaseAccessToken(){
@@ -1331,7 +1391,19 @@
     var storeName = isIos() ? "App Store" : "cavalyra.de";
     var manageHint = isIos()
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
-      : "Alle Preise, Testphasen und Details findest du auf cavalyra.de/pro. Dort kannst du dein Abo jederzeit abschließen, verwalten oder kündigen.";
+      : "";
+
+    // Android: Aboverwaltung über das Paddle Customer Portal.
+    // Standardmäßig ausgeblendet – wird nur eingeblendet, wenn eine
+    // Paddle-Subscription für dieses Gerät existiert.
+    var manageBlock = isIos()
+      ? ''
+      : ('<div class="card" id="paddleManageBlock" style="display:none;margin-top:12px;">'
+          + '<h3 style="margin:0 0 8px 0;font-size:18px;">Abo verwalten</h3>'
+          + '<p class="small" style="margin:0 0 10px 0;">Dein Abo wird über Paddle verwaltet. Dort kannst du dein Abo kündigen, Zahlungsdaten ändern und Rechnungen einsehen.</p>'
+          + '<button class="btn secondary" id="paddleManageBtn" onclick="return cavalyraOpenPaddlePortal()">Abo bei Paddle verwalten</button>'
+          + '</div>');
+
 
     // Preis-/Testzeile: Auf Android wird bewusst KEIN Preis angezeigt –
     // die vollständige Preislogik liegt ausschließlich auf cavalyra.de/pro.
@@ -1389,6 +1461,7 @@
       +     '<div class="license-check-message" id="nativeBillingMessage">'
       +       esc(manageHint)
       +     '</div>'
+      +     manageBlock
       +   '</div>'
       + '</div>'
       + '<div class="grid grid-2 section">'
@@ -1398,7 +1471,19 @@
 
     var el = document.getElementById("screen-pro");
     if(el) el.innerHTML = html;
+
+    // Android: prüfen, ob eine Paddle-Subscription existiert. Nur dann wird
+    // der Verwaltungsbereich eingeblendet. Kein Einfluss auf den Pro-Status.
+    if(!isIos() && isAndroid()){
+      requestPaddlePortalSession().then(function(res){
+        if(res && res.ok){
+          var box = document.getElementById("paddleManageBlock");
+          if(box) box.style.display = "";
+        }
+      }).catch(function(){});
+    }
   }
+
 
   function patch(){
     if(!isNative()) return;
@@ -1423,7 +1508,9 @@
       // (cavalyra.de/pro) – KEIN Kaufpfad. Der Kauf läuft ausschließlich
       // über openProWebsite() → create-paddle-checkout.
       window.openCavalyraPricing = function(){ openProManagementSite(); return false; };
-      window.openCavalyraCustomerPortal = function(){ openProManagementSite(); return false; };
+      // Aboverwaltung läuft über das Paddle Customer Portal.
+      window.cavalyraOpenPaddlePortal = function(){ openPaddlePortal(); return false; };
+      window.openCavalyraCustomerPortal = function(){ openPaddlePortal(); return false; };
     }
 
     setTimeout(function(){
