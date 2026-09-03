@@ -204,12 +204,29 @@
   }
 
   // -------------------- Paddle Customer Portal (nur Android) --------------------
+  // Ermittelt die maßgebliche E-Mail: zuerst das Eingabefeld auf dem
+  // Pro-Bildschirm, danach die bekannten lokalen Speicherorte.
+  function currentBillingEmail(){
+    try {
+      var input = document.getElementById("licenseEmailInput");
+      var v = input && input.value ? String(input.value).trim().toLowerCase() : "";
+      if(v && v.indexOf("@") !== -1) return v;
+    } catch(_){}
+    var keys = [LICENSE_EMAIL_STORAGE, "cavalyra_license_email"];
+    for(var i=0;i<keys.length;i++){
+      try {
+        var s = (localStorage.getItem(keys[i]) || "").trim().toLowerCase();
+        if(s && s.indexOf("@") !== -1) return s;
+      } catch(_){}
+    }
+    return "";
+  }
+
   // Erzeugt bei JEDEM Aufruf eine neue temporäre Portal-Session serverseitig.
   // Ändert keinen Lizenz-/Pro-Status und täuscht keinen Erfolg vor.
   async function requestPaddlePortalSession(){
     var installationId = await getInstallationId();
-    var email = "";
-    try { email = (localStorage.getItem(LICENSE_EMAIL_STORAGE) || "").trim().toLowerCase(); } catch(_){}
+    var email = currentBillingEmail();
     var token = getSupabaseAccessToken();
     var resp;
     try {
@@ -234,18 +251,28 @@
     return data;
   }
 
+
   async function openPaddlePortal(){
+    var btn = document.getElementById("paddleManageBtn");
+    if(btn){ btn.disabled = true; btn.textContent = "Aboverwaltung wird geöffnet…"; }
+    var email = currentBillingEmail();
     var data = await requestPaddlePortalSession();
+    if(btn){ btn.disabled = false; btn.textContent = "Abo bei Paddle verwalten"; }
     if(!data || !data.ok){
       if(window.toast){
-        if(data && data.reason === "no_paddle_subscription"){
-          window.toast("Es wurde kein Paddle-Abo für dieses Gerät gefunden.");
+        if(data && (data.reason === "no_paddle_subscription" || data.error === "installation_id_email_or_auth_required")){
+          window.toast(email
+            ? "Für " + email + " wurde kein Paddle-Abo gefunden."
+            : "Bitte zuerst die E-Mail-Adresse deines Paddle-Kaufs eintragen.");
+        } else if(data && data.error === "network"){
+          window.toast("Keine Verbindung. Bitte Internetverbindung prüfen.");
         } else {
           window.toast("Die Aboverwaltung konnte nicht geöffnet werden. Bitte später erneut versuchen.");
         }
       }
       return false;
     }
+
     var url = data.overviewUrl || data.updatePaymentMethodUrl || data.cancelSubscriptionUrl;
     if(!url){
       if(window.toast) window.toast("Die Aboverwaltung konnte nicht geöffnet werden.");
@@ -845,7 +872,9 @@
   }
   function saveKnownEmail(email){
     try { if(email) localStorage.setItem(LICENSE_EMAIL_STORAGE, email); } catch(_){}
+    try { if(email) localStorage.setItem("cavalyra_license_email", email); } catch(_){}
   }
+
 
   // Ruft die Supabase-Edge-Function `check-license` auf.
   // Funktioniert ohne Cavalyra-Cloud-Konto: falls kein JWT verfügbar ist,
@@ -1393,16 +1422,22 @@
       ? "Dein Pro-Abo wird über den App Store abgerechnet und kann jederzeit unter Einstellungen → Apple-ID → Abos gekündigt werden."
       : "";
 
-    // Android: Aboverwaltung über das Paddle Customer Portal.
-    // Standardmäßig ausgeblendet – wird nur eingeblendet, wenn eine
-    // Paddle-Subscription für dieses Gerät existiert.
+    // Android: E-Mail-Prüfung (Paddle-Lizenz in public.licenses) und
+    // Aboverwaltung über das Paddle Customer Portal. Immer sichtbar –
+    // die Buttons müssen jederzeit reagieren.
+    var knownEmail = isIos() ? "" : currentBillingEmail();
     var manageBlock = isIos()
       ? ''
-      : ('<div class="card" id="paddleManageBlock" style="display:none;margin-top:12px;">'
-          + '<h3 style="margin:0 0 8px 0;font-size:18px;">Abo verwalten</h3>'
-          + '<p class="small" style="margin:0 0 10px 0;">Dein Abo wird über Paddle verwaltet. Dort kannst du dein Abo kündigen, Zahlungsdaten ändern und Rechnungen einsehen.</p>'
-          + '<button class="btn secondary" id="paddleManageBtn" onclick="return cavalyraOpenPaddlePortal()">Abo bei Paddle verwalten</button>'
+      : ('<div class="card" id="paddleManageBlock" style="margin-top:12px;">'
+          + '<h3 style="margin:0 0 8px 0;font-size:18px;">Pro-Status & Abo verwalten</h3>'
+          + '<p class="small" style="margin:0 0 10px 0;">Gib die E-Mail-Adresse deines Paddle-Kaufs ein. Damit prüfst du deinen Pro-Status und öffnest die Aboverwaltung bei Paddle.</p>'
+          + '<input class="input" id="licenseEmailInput" type="email" value="' + esc(knownEmail) + '" placeholder="E-Mail-Adresse deines Paddle-Kaufs" style="margin-bottom:10px;">'
+          + '<div class="license-check-actions">'
+          +   '<button class="btn" id="licenseCheckBtn" onclick="return cavalyraCheckPaddleLicense()">Pro-Status prüfen</button>'
+          +   '<button class="btn secondary" id="paddleManageBtn" onclick="return cavalyraOpenPaddlePortal()">Abo bei Paddle verwalten</button>'
+          + '</div>'
           + '</div>');
+
 
 
     // Preis-/Testzeile: Auf Android wird bewusst KEIN Preis angezeigt –
@@ -1472,17 +1507,40 @@
     var el = document.getElementById("screen-pro");
     if(el) el.innerHTML = html;
 
-    // Android: prüfen, ob eine Paddle-Subscription existiert. Nur dann wird
-    // der Verwaltungsbereich eingeblendet. Kein Einfluss auf den Pro-Status.
-    if(!isIos() && isAndroid()){
-      requestPaddlePortalSession().then(function(res){
-        if(res && res.ok){
-          var box = document.getElementById("paddleManageBlock");
-          if(box) box.style.display = "";
-        }
-      }).catch(function(){});
-    }
   }
+
+  // Android: prüft die eingegebene E-Mail serverseitig gegen public.licenses
+  // (Paddle) und schaltet Pro bei aktivem Abo frei. Unabhängig davon, ob
+  // lokal bereits ein Pro-Status gespeichert ist – der Server entscheidet.
+  async function checkPaddleLicenseByEmail(){
+    var btn = document.getElementById("licenseCheckBtn");
+    var email = currentBillingEmail();
+    if(!email){
+      if(window.toast) window.toast("Bitte die E-Mail-Adresse deines Paddle-Kaufs eintragen.");
+      return false;
+    }
+    if(btn){ btn.disabled = true; btn.textContent = "Status wird geprüft…"; }
+    var result = null;
+    try {
+      result = await restoreLicenseByEmail(email);
+    } catch(e){
+      result = { ok:false, message: (e && e.message) || "" };
+    }
+
+    if(btn){ btn.disabled = false; btn.textContent = "Pro-Status prüfen"; }
+    var active = false;
+    try {
+      active = (typeof window.hasProAccess === "function") ? !!window.hasProAccess() : !!(result && result.ok);
+    } catch(_){ active = !!(result && result.ok); }
+    if(window.toast){
+      if(active) window.toast("Pro-Status bestätigt");
+      else if(result && result.message) window.toast(result.message);
+      else window.toast("Für diese E-Mail wurde kein aktives Pro-Abo gefunden.");
+    }
+    try { if(typeof window.render === "function") window.render(); } catch(_){}
+    return false;
+  }
+
 
 
   function patch(){
@@ -1504,14 +1562,17 @@
         return false;
       };
     } else if(isAndroid()){
-      // Android: Preis-/Portal-Links öffnen die Verwaltungsseite
-      // (cavalyra.de/pro) – KEIN Kaufpfad. Der Kauf läuft ausschließlich
-      // über openProWebsite() → create-paddle-checkout.
-      window.openCavalyraPricing = function(){ openProManagementSite(); return false; };
+      // Android: Paddle ist die einzige Quelle der Pro-Freischaltung.
+      // Der alte Website-Freischaltweg wird nicht mehr angeboten.
+      window.openCavalyraPricing = function(){ return openProWebsite(); };
       // Aboverwaltung läuft über das Paddle Customer Portal.
       window.cavalyraOpenPaddlePortal = function(){ openPaddlePortal(); return false; };
       window.openCavalyraCustomerPortal = function(){ openPaddlePortal(); return false; };
+      // Pro-Status prüfen: E-Mail gegen public.licenses (Paddle) prüfen.
+      window.cavalyraCheckPaddleLicense = function(){ checkPaddleLicenseByEmail(); return false; };
+      window.checkCavalyraLicenseStatus = function(){ checkPaddleLicenseByEmail(); return false; };
     }
+
 
     setTimeout(function(){
       try {

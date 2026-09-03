@@ -72,21 +72,23 @@ Deno.serve(async (req) => {
   const COLUMNS = "id,customer_id,subscription_id,source,updated_at";
   let lic: any = null;
 
-  if (userId) {
+  // Eine explizit übergebene E-Mail hat Vorrang (Nutzereingabe im Pro-Bereich).
+  if (email) {
+    const { data } = await service.from("licenses").select(COLUMNS)
+      .ilike("email", email).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+    if (data?.customer_id) lic = data;
+  }
+  if (!lic?.customer_id && userId) {
     const { data } = await service.from("licenses").select(COLUMNS)
       .eq("user_id", userId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
-    lic = data;
+    if (data?.customer_id) lic = data;
   }
   if (!lic?.customer_id && installationId) {
     const { data } = await service.from("licenses").select(COLUMNS)
       .eq("installation_id", installationId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
     if (data?.customer_id) lic = data;
   }
-  if (!lic?.customer_id && email) {
-    const { data } = await service.from("licenses").select(COLUMNS)
-      .ilike("email", email).order("updated_at", { ascending: false }).limit(1).maybeSingle();
-    if (data?.customer_id) lic = data;
-  }
+
 
   const customerId = lic?.customer_id || null;
   const subscriptionId = lic?.subscription_id || null;

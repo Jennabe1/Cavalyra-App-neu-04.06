@@ -83,7 +83,10 @@ Deno.serve(async (req) => {
   const COLUMNS = "id,status,expires_at,customer_id,subscription_id,source,updated_at,installation_id,user_id,email";
 
   // ---------- Modus 3: Restore per E-Mail ----------
-  if (email && !userId) {
+  // Eine explizit übergebene E-Mail hat Vorrang: die Datenbank (Paddle) ist
+  // die Quelle der Wahrheit, unabhängig von einem vorhandenen Cloud-Konto.
+  if (email) {
+
     // Case-insensitive Vergleich; wir suchen die jüngste aktive Zeile.
     const { data: rows, error: qErr } = await service
       .from("licenses")
