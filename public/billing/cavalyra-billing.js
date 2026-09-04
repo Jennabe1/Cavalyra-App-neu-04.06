@@ -1433,8 +1433,8 @@
           + '<p class="small" style="margin:0 0 10px 0;">Gib die E-Mail-Adresse deines Paddle-Kaufs ein. Damit prüfst du deinen Pro-Status und öffnest die Aboverwaltung bei Paddle.</p>'
           + '<input class="input" id="licenseEmailInput" type="email" value="' + esc(knownEmail) + '" placeholder="E-Mail-Adresse deines Paddle-Kaufs" style="margin-bottom:10px;">'
           + '<div class="license-check-actions">'
-          +   '<button class="btn" id="licenseCheckBtn" onclick="return cavalyraCheckPaddleLicense()">Pro-Status prüfen</button>'
-          +   '<button class="btn secondary" id="paddleManageBtn" onclick="return cavalyraOpenPaddlePortal()">Abo bei Paddle verwalten</button>'
+          +   '<button class="btn" id="licenseCheckBtn" type="button">Pro-Status prüfen</button>'
+          +   '<button class="btn secondary" id="paddleManageBtn" type="button">Abo bei Paddle verwalten</button>'
           + '</div>'
           + '</div>');
 
@@ -1505,7 +1505,31 @@
       + '</div>';
 
     var el = document.getElementById("screen-pro");
-    if(el) el.innerHTML = html;
+    if(el){
+      // Wiederholte Renders dürfen die Eingabe nicht zerstören: identisches
+      // Markup wird gar nicht neu gesetzt, sonst werden Wert, Fokus und
+      // Cursorposition des E-Mail-Feldes erhalten.
+      if(el.getAttribute("data-pro-html") !== html){
+        var prev = document.getElementById("licenseEmailInput");
+        var prevVal = prev ? prev.value : null;
+        var hadFocus = !!(prev && document.activeElement === prev);
+        var selStart = null, selEnd = null;
+        if(prev){ try { selStart = prev.selectionStart; selEnd = prev.selectionEnd; } catch(_){} }
+        el.innerHTML = html;
+        el.setAttribute("data-pro-html", html);
+        var next = document.getElementById("licenseEmailInput");
+        if(next && prevVal !== null){
+          next.value = prevVal;
+          if(hadFocus){
+            try {
+              next.focus();
+              if(selStart !== null) next.setSelectionRange(selStart, selEnd);
+            } catch(_){}
+          }
+        }
+      }
+    }
+
 
   }
 
@@ -1561,7 +1585,7 @@
         if(window.toast) window.toast("Abo verwalten: Einstellungen → Apple-ID → Abos");
         return false;
       };
-    } else if(isAndroid()){
+    } else {
       // Android: Paddle ist die einzige Quelle der Pro-Freischaltung.
       // Der alte Website-Freischaltweg wird nicht mehr angeboten.
       window.openCavalyraPricing = function(){ return openProWebsite(); };
@@ -1572,6 +1596,29 @@
       window.cavalyraCheckPaddleLicense = function(){ checkPaddleLicenseByEmail(); return false; };
       window.checkCavalyraLicenseStatus = function(){ checkPaddleLicenseByEmail(); return false; };
     }
+
+    // Sicherheitsnetz (nur Nicht-iOS): Eingaben im E-Mail-Feld merken und
+    // Klicks auch dann verarbeiten, wenn der Button zwischenzeitlich neu
+    // gerendert wurde.
+    if(!isIos()){
+      document.addEventListener("input", function(ev){
+        var t = ev.target;
+        if(!t || t.id !== "licenseEmailInput") return;
+        var v = String(t.value || "").trim().toLowerCase();
+        if(v && v.indexOf("@") !== -1) saveKnownEmail(v);
+      }, true);
+      document.addEventListener("click", function(ev){
+        var t = ev.target;
+        if(!t || !t.closest) return;
+        var btn = t.closest("#licenseCheckBtn, #paddleManageBtn");
+        if(!btn || btn.disabled) return;
+        ev.preventDefault();
+        if(btn.id === "licenseCheckBtn") checkPaddleLicenseByEmail();
+        else openPaddlePortal();
+      });
+    }
+
+
 
 
     setTimeout(function(){
