@@ -1264,6 +1264,8 @@
     refreshLicenseViaSupabase: refreshLicenseViaSupabase,
     restoreLicenseByEmail: restoreLicenseByEmail,
     saveKnownEmail: saveKnownEmail,
+    currentBillingEmail: currentBillingEmail,
+    openPaddlePortal: openPaddlePortal,
     getProductInfo: getProductInfo,
     openProWebsite: openProWebsite,
     getInstallationId: getInstallationId
@@ -1309,6 +1311,42 @@
   function isNative(){ return window.CavalyraBilling && (window.CavalyraBilling.isAndroidApp() || window.CavalyraBilling.isIosApp()); }
   function isIos(){ return window.CavalyraBilling && window.CavalyraBilling.isIosApp(); }
   function isAndroid(){ return window.CavalyraBilling && window.CavalyraBilling.isAndroidApp(); }
+
+  // Brücken zu den Kernfunktionen des Billing-Moduls (eigener Scope).
+  function currentBillingEmail(){
+    try {
+      var input = document.getElementById("licenseEmailInput");
+      var v = input && input.value ? String(input.value).trim().toLowerCase() : "";
+      if(v && v.indexOf("@") !== -1) return v;
+    } catch(_){}
+    try {
+      if(window.CavalyraBilling && typeof window.CavalyraBilling.currentBillingEmail === "function"){
+        return window.CavalyraBilling.currentBillingEmail() || "";
+      }
+    } catch(_){}
+    return "";
+  }
+  function saveKnownEmail(email){
+    try {
+      if(window.CavalyraBilling && typeof window.CavalyraBilling.saveKnownEmail === "function"){
+        window.CavalyraBilling.saveKnownEmail(email);
+      }
+    } catch(_){}
+  }
+  function restoreLicenseByEmail(email){
+    if(window.CavalyraBilling && typeof window.CavalyraBilling.restoreLicenseByEmail === "function"){
+      return window.CavalyraBilling.restoreLicenseByEmail(email);
+    }
+    return Promise.reject(new Error("Lizenzprüfung nicht verfügbar."));
+  }
+  function openPaddlePortal(){
+    if(window.CavalyraBilling && typeof window.CavalyraBilling.openPaddlePortal === "function"){
+      return window.CavalyraBilling.openPaddlePortal();
+    }
+    if(window.toast) window.toast("Die Aboverwaltung ist aktuell nicht verfügbar.");
+    return false;
+  }
+
 
   // Zentrale, globale Funktion für alle "Pro freischalten"-Buttons in gesperrten Bereichen.
   // Android: öffnet ausschließlich die Website https://cavalyra.de/pro.
